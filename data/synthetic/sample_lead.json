@@ -1,0 +1,12 @@
+{
+  "company_name": "Glasswing Logistics",
+  "contact_name": "Rowan Hollis",
+  "contact_email": "rowan.hollis@glasswing-logistics.example",
+  "company_size": "51-200",
+  "industry": "logistics",
+  "service_interest": "process_automation",
+  "budget_band": "50k_100k",
+  "timeline": "1_3_months",
+  "source": "web_form",
+  "message": "Hi Northstar team, our dispatch team re-keys every order from email into three systems. We want to automate intake and reporting this quarter."
+}
