@@ -103,7 +103,7 @@ sqlite3 var/flowpilot.db \
 | `timeout` | Generation exceeded `FLOWPILOT_LLM_TIMEOUT_S` | First call includes model load; raise the timeout (max 180) or close memory-heavy apps |
 | `busy` | Another generation held the single slot > 5 s | Expected under concurrent load; retry later |
 | `invalid_output` | Reply was not valid JSON for the schema | Inspect `llm_runs.raw_output`; consider another model or a prompt revision (bump `PROMPT_VERSION`) |
-| `guard_rejected` | Draft/summary contained links, contacts, prices, placeholders, or injection text | `llm_runs.error` lists the violations; the template draft was used instead |
+| `guard_rejected` (M2 p3+: after whitespace-only layout repair; see audit `layout_normalized`) | Draft/summary contained links, contacts, prices, placeholders, injection text, hidden characters, or budget references; the subject had a line break (`invalid_subject`); or the draft broke the required layout (`missing_paragraph_breaks`, `missing_greeting_line`, `missing_closing`, `paragraph_too_long`, `missing_signoff`) | `llm_runs.error` lists the violations; the template draft was used instead |
 | `injection_suspected` | Lead text matched the pre-screen; the model was not called | Expected for hostile input; review the lead manually |
 
 Fallbacks are always safe to keep: they are deterministic, pass the same guards, and still require

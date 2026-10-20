@@ -18,7 +18,7 @@ from pydantic import ValidationError
 
 from flowpilot.db import repository as repo
 from flowpilot.db.connection import transaction
-from flowpilot.domain.fallbacks import rules_assessment, template_draft
+from flowpilot.domain.fallbacks import requests_pricing, rules_assessment, template_draft
 from flowpilot.domain.models import (
     Assessment,
     AssessmentFlag,
@@ -31,8 +31,14 @@ from flowpilot.domain.models import (
 )
 from flowpilot.llm import prompts
 from flowpilot.llm.client import LLMClient, LLMError
-from flowpilot.llm.guards import check_draft, check_summary, detect_injection
-from flowpilot.llm.schemas import AssessmentOutput, DraftOutput, json_schema
+from flowpilot.llm.guards import (
+    FORMAT_VIOLATIONS,
+    check_draft,
+    check_summary,
+    detect_injection,
+)
+from flowpilot.llm.layout import normalize_draft_layout
+from flowpilot.llm.schemas import AssessmentOutput, DraftOutput, LLMFlag, json_schema
 from flowpilot.services.intake import Clock, IdempotencyKeyReused, iso, utc_now
 
 QUALIFY_SCOPE = "POST /leads/{id}/qualification"
@@ -123,26 +129,47 @@ def _call_model[T](
     return None, attempt
 
 
-def _parse_assessment(raw: str) -> Assessment:
+def _parse_assessment(raw: str, message: str) -> Assessment:
     out = AssessmentOutput.model_validate_json(raw)
     violations = check_summary(out.summary)
     if violations:
         raise _GuardRejected(violations)
+    # The model may infer pricing interest from metadata; keep the flag only when the lead's own
+    # message explicitly asks about pricing.
+    flags = [
+        AssessmentFlag(flag.value)
+        for flag in out.flags
+        if flag is not LLMFlag.REQUESTS_PRICING or requests_pricing(message)
+    ]
     return Assessment(
         source=AssessmentSource.LLM,
         summary=out.summary,
         service_line=out.service_line,
         urgency=out.urgency,
-        flags=[AssessmentFlag(flag.value) for flag in out.flags],
+        flags=flags,
     )
 
 
-def _parse_draft(raw: str) -> DraftContent:
+def _parse_draft(raw: str) -> tuple[DraftContent, bool]:
+    """Validate, repair layout (whitespace only), then guard. Returns (draft, layout_normalized).
+
+    Layout rules are judged on the normalized body. Every other guard (content, budget, hidden
+    characters, injection echo, subject) is judged on both the original and the normalized body,
+    so normalization can never clear a non-layout violation.
+    """
     out = DraftOutput.model_validate_json(raw)
-    violations = check_draft(out.subject, out.body)
+    body = normalize_draft_layout(out.body)
+    violations = check_draft(out.subject, body)
+    if body != out.body:
+        violations += [
+            v
+            for v in check_draft(out.subject, out.body)
+            if v not in FORMAT_VIOLATIONS and v not in violations
+        ]
     if violations:
         raise _GuardRejected(violations)
-    return DraftContent(subject=out.subject, body=out.body)
+    DraftOutput(subject=out.subject, body=body)  # normalized body must still meet length limits
+    return DraftContent(subject=out.subject, body=body), body != out.body
 
 
 def _injection(lead: dict) -> list[str]:
@@ -186,7 +213,7 @@ def qualify_lead(
             system=prompts.ASSESSMENT_SYSTEM,
             user=user,
             schema=json_schema(AssessmentOutput),
-            parse=_parse_assessment,
+            parse=lambda raw: _parse_assessment(raw, lead["message"]),
             timer=timer,
         )
     if assessment is None:
@@ -284,7 +311,7 @@ def draft_reply(
     model = llm.model if llm is not None else None
     injection = _injection(lead)
 
-    content: DraftContent | None = None
+    parsed: tuple[DraftContent, bool] | None = None
     attempt = _Attempt()
     if llm is None:
         attempt.fallback_reason = "disabled"
@@ -292,7 +319,7 @@ def draft_reply(
         attempt.fallback_reason = "injection_suspected"
         attempt.error = ",".join(injection)
     else:
-        content, attempt = _call_model(
+        parsed, attempt = _call_model(
             llm,
             system=prompts.DRAFT_SYSTEM,
             user=user,
@@ -300,6 +327,7 @@ def draft_reply(
             parse=_parse_draft,
             timer=timer,
         )
+    content, layout_normalized = parsed if parsed is not None else (None, False)
     generator = DraftGenerator.LLM if content is not None else DraftGenerator.TEMPLATE
     if content is None:
         content = template_draft(
@@ -362,6 +390,7 @@ def draft_reply(
                 "draft_id": draft_id,
                 "version": version,
                 "generator": generator.value,
+                "layout_normalized": layout_normalized,
                 "llm_run_id": run_id,
                 "model": model if is_llm else None,
                 "fallback_reason": attempt.fallback_reason,

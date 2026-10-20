@@ -142,14 +142,27 @@ Every qualification or draft request for an eligible lead returns a usable resul
 auth, unknown-lead, ineligible-status, and validation errors (`401`/`404`/`409`/`422`) do not. The
 pipeline per request:
 
-1. **Pre-screen** company name, contact name, and message for prompt-injection patterns. A match
-   skips the model entirely (`fallback_reason: injection_suspected`).
+1. **Pre-screen** company name, contact name, and message for prompt-injection patterns, after
+   Unicode normalization (NFKC) and removal of invisible characters so zero-width splitting and
+   fullwidth text cannot evade it; bidi overrides and Unicode tag characters count as a match. A
+   match skips the model entirely (`fallback_reason: injection_suspected`). Invisible characters
+   are also stripped from everything sent to the model.
 2. **Call Ollama** (`/api/chat`, `stream: false`, `temperature: 0`, fixed seed) with a versioned
    system prompt; lead text is sent as delimited JSON data, never as instructions, and the contact
-   email is never sent. The JSON schema of the expected output is passed as `format`.
-3. **Validate** the reply strictly (Pydantic, unknown fields rejected), then apply **output guards**:
+   email and budget band are never sent. The JSON schema of the expected output is passed as
+   `format`.
+3. **Validate** the reply strictly (Pydantic, unknown fields rejected), **repair layout** with a
+   whitespace-only normalizer (greeting and `Best regards,` / sign-off moved onto their own lines;
+   no words are added, removed, or changed, and a wrong sign-off is never fixed), then apply
+   **output guards**. Layout guards judge the repaired text; every other guard judges both the
+   original and the repaired text, so repair can never clear a content or security violation.
+   Output guards:
    drafts may not contain links, email addresses, phone numbers, prices, placeholders, role markers,
-   or echoed injection text.
+   echoed injection text, hidden/invisible characters, or any reference to the prospect's budget;
+   subjects may not contain line breaks. Drafts must follow the required layout (greeting line,
+   blank-line-separated paragraphs of readable length, `Best regards,`, then the exact sign-off line
+   `Northstar Digital Solutions`). A model `requests_pricing` flag is kept only if the lead's own
+   message explicitly asks about price, fees, or a quote.
 4. **Fall back** deterministically on any failure: rules-based assessment or a route-specific
    template draft. `fallback_reason` is one of `disabled`, `injection_suspected`, `unavailable`,
    `timeout`, `model_missing`, `busy`, `invalid_output`, `guard_rejected`.
@@ -179,16 +192,40 @@ Live checks against a real model are opt-in and never part of the default suite:
   Their schema guardrails are in place and tested; nothing writes to them yet.
 - **Scoring and routing remain rules-only.** LLM output is advisory and is never fed back into
   them.
-- **The injection pre-screen is heuristic.** It will miss novel phrasings and occasionally flag
-  benign text (which then gets a template draft). The primary defence is that model output has no
-  authority.
+- **The injection pre-screen is heuristic.** It will miss novel phrasings, paraphrases, other
+  languages, and homoglyph substitutions (e.g. Cyrillic look-alikes, which NFKC does not fold), and
+  occasionally flag benign text (which then gets a template draft). The primary defence is that
+  model output has no authority.
+- **Output guards are strict and pattern-based.** Legitimate drafts can be rejected (e.g. a lead
+  asking for help with *budgeting software* trips the budget guard) and fall back to the template;
+  paraphrased budget references may still slip through to human review.
 - **LLM calls are synchronous.** A request waits for generation (up to `FLOWPILOT_LLM_TIMEOUT_S`;
   the first call also loads the model), and only one generation runs at a time; concurrent
   requests wait up to 5 s, then fall back with `busy`.
-- **Live model quality, latency, and Ollama's enforcement of `format` schemas are not yet
-  measured** on this hardware; the default suite uses a fake client. Strict validation and
-  fallback make the API safe either way.
-- **Draft quality from a 3B model is limited.** Drafts are starting points for human review.
+- **Live behaviour is only spot-checked.** Three opt-in runs (one synthetic lead each,
+  `qwen2.5:3b` on an M1 MacBook Air, temperature 0) measured roughly 2.5-5.8 s per call (the
+  higher figures include a cold model load) and schema-valid JSON every time, so Ollama's `format`
+  constraint appeared to be honoured. Prompts p1 and p2 produced single-line drafts that failed
+  the layout guards; p3 produced a draft that passed every guard without repair. This is not a
+  measured pass rate across leads, routes, or message styles; the default suite uses a fake client,
+  and strict validation plus fallback keep the API safe either way.
+- **Draft quality from a 3B model is limited.** Live drafts were generic, and assessments raised
+  questionable advisory flags (e.g. `unclear_need` for a clearly stated need). Drafts are starting
+  points for human review.
+- **Unexpected errors return 500, not a fallback.** Model failures the client maps to typed errors
+  fall back deterministically, but an unexpected exception (for example a bug, or an HTTP-client
+  error outside the mapped types) returns a generic `500 Internal Server Error`. No internal
+  details are exposed and nothing is written, but no draft is produced for that request.
+- **M1 intake stores invisible characters.** Lead fields may contain zero-width, bidi, or other
+  control/format characters. M2 strips them before anything is sent to the model and the
+  injection pre-screen detects them, but the stored values are unchanged: any future UI or export
+  must escape or strip them.
+- **`llm_runs.raw_output` has no retention limit.** Up to 4 KB of raw model output is stored per
+  attempt indefinitely (synthetic data only in this project); a retention policy is not yet
+  implemented.
+- **Prompt examples can be copied.** The draft prompt includes a worked example (contact "Alex",
+  "reporting needs"). A model may copy its name or wording into a real draft; no guard checks that
+  the greeting matches the lead's contact name, so human review must catch it.
 
 ## License
 

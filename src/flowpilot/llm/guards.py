@@ -8,17 +8,21 @@ from __future__ import annotations
 
 import re
 
+from flowpilot.domain.fallbacks import CLOSING, SIGNOFF
+from flowpilot.domain.text import SMUGGLING, has_hidden, normalize_for_screening
+
 _I = re.IGNORECASE
 _IM = re.IGNORECASE | re.MULTILINE
 
 INJECTION_PATTERNS: dict[str, re.Pattern[str]] = {
+    # Bridges use [\s\S] (not ".") so a line break between the trigger words cannot evade them.
     "ignore_instructions": re.compile(
-        r"\bignore\b.{0,40}\b(previous|prior|above|earlier|all|any|your)\b.{0,20}"
+        r"\bignore\b[\s\S]{0,40}\b(previous|prior|above|earlier|all|any|your)\b[\s\S]{0,20}"
         r"\b(instructions?|prompts?|rules?|messages?|directions?)\b",
         _I,
     ),
     "override_instructions": re.compile(
-        r"\b(disregard|forget|override|bypass)\b.{0,40}"
+        r"\b(disregard|forget|override|bypass)\b[\s\S]{0,40}"
         r"\b(instructions?|prompts?|rules?|guidelines?|guardrails?)\b",
         _I,
     ),
@@ -53,26 +57,100 @@ OUTPUT_PATTERNS: dict[str, re.Pattern[str]] = {
     ),
     "placeholder": re.compile(r"\[[^\]\n]{1,40}\]|\{[^}\n]{1,40}\}|<[^>\n]{1,40}>"),
     "role_marker": re.compile(r"<\|[a-z_]+\|>|^\s*(system|assistant|user)\s*:", _IM),
+    # The prospect's budget must never be referenced, directly or by obvious paraphrase.
+    "budget": re.compile(
+        r"\bbudget\w*"
+        r"|\b(price|pricing|spend|spending|investment|funding|cost|financial)\s+"
+        r"(range|bracket|band|envelope|level|ceiling|cap|limit|parameters|constraints)s?\b"
+        r"|\b(what|how\s+much)\s+(you|your\s+(team|company|organi[sz]ation))\s+"
+        r"(can|could|are\s+able\s+to|plan\s+to|intend\s+to|want\s+to|would\s+like\s+to)\s+"
+        r"(spend|invest|allocate|afford)\b"
+        r"|\bwithin\s+your\s+means\b|\bearmarked\b"
+        r"|\b(under|over)_\d+k\b|\b\d+k_\d+k\b|\bundisclosed\b",
+        _I,
+    ),
 }
 
 SUMMARY_CHECKS = ("url", "email", "phone", "role_marker")
 
 
 def detect_injection(*texts: str) -> list[str]:
-    """Names of injection patterns found in any of the given untrusted texts."""
-    joined = "\n".join(texts)
-    return [name for name, pattern in INJECTION_PATTERNS.items() if pattern.search(joined)]
+    """Names of injection patterns found in any of the given untrusted texts.
+
+    Matching runs on NFKC-normalized text with invisible characters removed, so zero-width
+    splitting ("ig\u200bnore") and fullwidth forms cannot evade the patterns. Bidi controls and
+    Unicode tag characters are themselves treated as an injection signal.
+    """
+    raw = "\n".join(texts)
+    joined = normalize_for_screening(raw)
+    found = [name for name, pattern in INJECTION_PATTERNS.items() if pattern.search(joined)]
+    if SMUGGLING.search(raw):
+        found.append("hidden_characters")
+    return found
 
 
 def _violations(text: str, checks: tuple[str, ...]) -> list[str]:
-    found = [name for name in checks if OUTPUT_PATTERNS[name].search(text)]
+    screened = normalize_for_screening(text)
+    found = [name for name in checks if OUTPUT_PATTERNS[name].search(screened)]
+    if has_hidden(text):
+        found.append("hidden_characters")
     if detect_injection(text):
         found.append("injection_echo")
     return found
 
 
+# Violations that depend only on line layout. Whitespace-only normalization may legitimately clear
+# these; every other violation is judged on the original model text as well.
+FORMAT_VIOLATIONS = frozenset(
+    {
+        "missing_paragraph_breaks",
+        "missing_greeting_line",
+        "missing_closing",
+        "paragraph_too_long",
+        "missing_signoff",
+    }
+)
+
+GREETING_MAX_CHARS = 60
+PARAGRAPH_MAX_CHARS = 600
+_BLANK_LINE = re.compile(r"\n[ \t]*\n")
+
+
+def format_violations(body: str) -> list[str]:
+    """Required layout: a greeting line on its own, at least one body paragraph, blank lines
+    between paragraphs, paragraphs of readable length, then "Best regards," and the sign-off."""
+    text = body.replace("\r\n", "\n").replace("\r", "\n").strip()
+    blocks = [block.strip() for block in _BLANK_LINE.split(text) if block.strip()]
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    found = []
+    if len(blocks) < 3:
+        found.append("missing_paragraph_breaks")
+    greeting = lines[0] if lines else ""
+    if not (
+        blocks and blocks[0] == greeting and len(greeting) <= GREETING_MAX_CHARS
+    ) or not greeting.endswith(","):
+        found.append("missing_greeting_line")
+    if len(lines) < 2 or lines[-2] != CLOSING:
+        found.append("missing_closing")
+    if any(len(block) > PARAGRAPH_MAX_CHARS for block in blocks):
+        found.append("paragraph_too_long")
+    return found
+
+
+def has_signoff(body: str) -> bool:
+    """The last non-empty line must be exactly the company sign-off."""
+    lines = [line.strip() for line in body.splitlines() if line.strip()]
+    return bool(lines) and lines[-1] == SIGNOFF
+
+
 def check_draft(subject: str, body: str) -> list[str]:
-    return _violations(f"{subject}\n{body}", tuple(OUTPUT_PATTERNS))
+    found = _violations(f"{subject}\n{body}", tuple(OUTPUT_PATTERNS))
+    if "\n" in subject or "\r" in subject or has_hidden(subject):
+        found.append("invalid_subject")  # header-injection risk once messages are sent
+    if not has_signoff(body):
+        found.append("missing_signoff")
+    found.extend(format_violations(body))
+    return found
 
 
 def check_summary(summary: str) -> list[str]:

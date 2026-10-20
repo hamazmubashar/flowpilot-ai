@@ -18,8 +18,11 @@ from flowpilot.domain.models import (
     Timeline,
     Urgency,
 )
+from flowpilot.domain.text import strip_hidden
 
-SIGNATURE = "Best regards,\nNorthstar Digital Solutions"
+CLOSING = "Best regards,"
+SIGNOFF = "Northstar Digital Solutions"
+SIGNATURE = f"{CLOSING}\n{SIGNOFF}"
 SUMMARY_MAX = 300
 
 TIMELINE_URGENCY = {
@@ -29,7 +32,14 @@ TIMELINE_URGENCY = {
     Timeline.EXPLORING: Urgency.LOW,
 }
 
-_PRICING = re.compile(r"\b(price|pricing|cost|costs|quote|quotes|rate|rates|budget)\b", re.I)
+# Explicit requests for pricing in the lead's own words. Deliberately excludes "budget", "costs"
+# ("reduce costs"), and bare "rate(s)" ("error rates"); never derived from budget_band metadata.
+_PRICING_REQUEST = re.compile(
+    r"\b(prices?|pricing|quotes?|quotations?|fees?|rate\s+card|day\s+rates?|hourly\s+rates?)\b"
+    r"|\bhow\s+much\b"
+    r"|\bwhat\b[^.?!\n]{0,40}\bcost\b",
+    re.I,
+)
 _SENTENCE_END = re.compile(r"(?<=[.!?])\s")
 _NAME_TOKEN = re.compile(r"[^A-Za-z'-]")
 
@@ -51,6 +61,11 @@ ROUTE_NEXT_STEP = {
 }
 
 
+def requests_pricing(message: str) -> bool:
+    """True only when the message itself explicitly asks about price, fees, or a quote."""
+    return bool(_PRICING_REQUEST.search(message))
+
+
 def service_label(service: ServiceLine) -> str:
     return service.value.replace("_", " ")
 
@@ -63,7 +78,8 @@ def first_name(contact_name: str) -> str:
 
 
 def _first_sentence(text: str, limit: int) -> str:
-    sentence = _SENTENCE_END.split(" ".join(text.split()), maxsplit=1)[0]
+    # Lead text is untrusted: drop invisible characters before echoing it to a human reviewer.
+    sentence = _SENTENCE_END.split(" ".join(strip_hidden(text).split()), maxsplit=1)[0]
     return sentence if len(sentence) <= limit else sentence[: limit - 3].rstrip() + "..."
 
 
@@ -77,7 +93,7 @@ def rules_assessment(
     injection_suspected: bool,
 ) -> Assessment:
     flags: list[AssessmentFlag] = []
-    if _PRICING.search(message):
+    if requests_pricing(message):
         flags.append(AssessmentFlag.REQUESTS_PRICING)
     if service_interest is ServiceLine.OTHER or len(message.strip()) < 40:
         flags.append(AssessmentFlag.UNCLEAR_NEED)

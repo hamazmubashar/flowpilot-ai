@@ -3,8 +3,10 @@ import pytest
 from flowpilot.domain.fallbacks import (
     ROUTE_NEXT_STEP,
     SIGNATURE,
+    SIGNOFF,
     SUMMARY_MAX,
     first_name,
+    requests_pricing,
     rules_assessment,
     template_draft,
 )
@@ -109,3 +111,46 @@ def test_other_service_line_reads_naturally() -> None:
     assert " other" not in draft.subject + draft.body
     summary = assess(service_interest=ServiceLine.OTHER).summary
     assert summary.startswith("51-200-person retail ecommerce company with an unspecified")
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "What would a quote cost?",
+        "Can you share your pricing for a pilot?",
+        "How much does an engagement like this usually run?",
+        "What are your fees for a discovery phase?",
+        "Please send a quotation and your day rates.",
+        "What would phase one cost?",
+    ],
+)
+def test_requests_pricing_explicit(message: str) -> None:
+    assert requests_pricing(message) is True
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "We have a 50k budget for this project.",
+        "Our budget is tight this year.",
+        "We want to reduce operating costs in the warehouse.",
+        "Our error rates doubled last quarter.",
+        "Conversion rates on the checkout page are falling.",
+        "We are exploring automation options for next year.",
+    ],
+)
+def test_requests_pricing_not_inferred(message: str) -> None:
+    assert requests_pricing(message) is False
+    assert AssessmentFlag.REQUESTS_PRICING not in assess(message=message).flags
+
+
+def test_template_signature_uses_exact_signoff() -> None:
+    assert SIGNATURE.splitlines()[-1] == SIGNOFF == "Northstar Digital Solutions"
+
+
+def test_rules_summary_strips_hidden_characters() -> None:
+    message = "Our month\u200b-end\u202e reporting takes three days. More text."
+    summary = assess(message=message).summary
+    assert "\u200b" not in summary
+    assert "\u202e" not in summary
+    assert summary.endswith("Our month-end reporting takes three days.")
