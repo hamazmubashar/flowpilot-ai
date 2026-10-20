@@ -3,8 +3,10 @@ from pathlib import Path
 import pytest
 
 from flowpilot.settings import (
+    LLMConfig,
     Settings,
     SettingsError,
+    load_llm_config,
     load_settings,
     load_storage_paths,
     parse_env_file,
@@ -87,3 +89,82 @@ def test_storage_paths_need_no_api_key() -> None:
     paths = load_storage_paths({"FLOWPILOT_BACKUP_DIR": "bk"}, env_file=None)
     assert paths.backup_dir == Path("bk")
     assert paths.db_path == Path("var/flowpilot.db")
+
+
+# --- M2: LLM configuration -------------------------------------------------------------------
+
+
+def test_llm_defaults_to_off() -> None:
+    s = load_settings({"FLOWPILOT_API_KEY": KEY}, env_file=None)
+    assert s.llm == LLMConfig()
+    assert s.llm.mode == "off"
+    assert s.llm.enabled is False
+    assert s.llm.model == "qwen2.5:3b"
+    assert s.llm.ollama_url == "http://127.0.0.1:11434"
+
+
+def test_llm_enabled_from_env() -> None:
+    cfg = load_llm_config(
+        {
+            "FLOWPILOT_LLM_MODE": " Ollama ",
+            "FLOWPILOT_OLLAMA_URL": "http://[::1]:11434",
+            "FLOWPILOT_LLM_MODEL": "gemma3:1b",
+            "FLOWPILOT_LLM_TIMEOUT_S": "90",
+        },
+        env_file=None,
+    )
+    assert cfg.enabled is True
+    assert cfg.model == "gemma3:1b"
+    assert cfg.timeout_s == 90.0
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://example.com:11434",
+        "http://10.0.0.5:11434",
+        "http://0.0.0.0:11434",
+        "ftp://127.0.0.1:11434",
+        "http://user:pw@127.0.0.1:11434",
+        "http://127.0.0.1:11434/api",
+        "http://127.0.0.1:11434?x=1",
+        "http://127.0.0.1.evil.example:11434",
+        "127.0.0.1:11434",
+    ],
+)
+def test_non_loopback_ollama_url_rejected(url: str) -> None:
+    with pytest.raises(SettingsError, match="loopback"):
+        LLMConfig(ollama_url=url)
+
+
+@pytest.mark.parametrize(
+    "url", ["http://127.0.0.1:11434", "http://localhost:11434/", "https://[::1]:8443"]
+)
+def test_loopback_ollama_urls_accepted(url: str) -> None:
+    assert LLMConfig(ollama_url=url).ollama_url == url
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"mode": "openai"}, "LLM_MODE"),
+        ({"model": "bad model"}, "LLM_MODEL"),
+        ({"model": "-rm"}, "LLM_MODEL"),
+        ({"timeout_s": 1.0}, "between"),
+        ({"timeout_s": 500.0}, "between"),
+    ],
+)
+def test_invalid_llm_config_rejected(kwargs: dict, match: str) -> None:
+    with pytest.raises(SettingsError, match=match):
+        LLMConfig(**kwargs)
+
+
+def test_non_numeric_timeout_rejected() -> None:
+    with pytest.raises(SettingsError, match="not a number"):
+        load_llm_config({"FLOWPILOT_LLM_TIMEOUT_S": "soon"}, env_file=None)
+
+
+def test_repr_includes_llm_config_without_key() -> None:
+    s = Settings(api_key=KEY, db_path=Path("x.db"), backup_dir=Path("b"))
+    assert "llm=LLMConfig(mode='off'" in repr(s)
+    assert KEY not in repr(s)

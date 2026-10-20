@@ -13,6 +13,7 @@ from flowpilot.api.app import create_app
 from flowpilot.db.connection import connect
 from flowpilot.db.migrate import migrate
 from flowpilot.settings import Settings
+from tests.fakes import FakeLLMClient
 
 API_KEY = "test-api-key-0123456789abcdefghijklmnop"
 FIXED_NOW = datetime(2026, 10, 20, 12, 0, 0, tzinfo=UTC)
@@ -71,6 +72,19 @@ def settings(db_path: Path, tmp_path: Path) -> Settings:
 @pytest.fixture
 def client(settings: Settings) -> Iterator[TestClient]:
     with TestClient(create_app(settings, clock=lambda: FIXED_NOW)) as test_client:
+        yield test_client
+
+
+@pytest.fixture
+def fake_llm() -> FakeLLMClient:
+    return FakeLLMClient()
+
+
+@pytest.fixture
+def llm_client(settings: Settings, fake_llm: FakeLLMClient) -> Iterator[TestClient]:
+    """API client wired to the scripted fake LLM (as if FLOWPILOT_LLM_MODE=ollama)."""
+    app = create_app(settings, clock=lambda: FIXED_NOW, llm=fake_llm)
+    with TestClient(app) as test_client:
         yield test_client
 
 

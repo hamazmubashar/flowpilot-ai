@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel
 
 from flowpilot.domain.models import (
+    AssessmentFlag,
+    AssessmentSource,
     BudgetBand,
     CompanySize,
+    DraftGenerator,
     Industry,
     LeadSource,
     LeadStatus,
@@ -17,6 +20,7 @@ from flowpilot.domain.models import (
     ServiceLine,
     Tier,
     Timeline,
+    Urgency,
 )
 
 
@@ -88,3 +92,41 @@ class ErrorResponse(BaseModel):
 class Health(BaseModel):
     status: str
     database: str
+
+
+class LLMRunInfo(BaseModel):
+    model: str | None
+    prompt_version: str
+    outcome: Literal["ok", "fallback"]
+    fallback_reason: str | None
+    latency_ms: int | None
+
+
+class AssessmentOut(BaseModel):
+    """Advisory only: does not change the lead's score, tier, route, or status."""
+
+    id: int
+    lead_id: int
+    source: AssessmentSource
+    summary: str
+    service_line: ServiceLine
+    urgency: Urgency
+    flags: list[AssessmentFlag]
+    llm_run_id: int
+    created_at: str
+    run: LLMRunInfo
+
+
+class DraftOut(BaseModel):
+    id: int
+    lead_id: int
+    version: int
+    subject: str
+    body: str
+    generator: DraftGenerator
+    model: str | None
+    prompt_version: str | None
+    llm_run_id: int | None
+    fallback_reason: str | None
+    created_at: str
+    requires_human_approval: Literal[True] = True

@@ -31,11 +31,12 @@ def test_migrate_creates_db_and_is_idempotent(capsys, paths) -> None:
     code, out, _ = run(capsys, "--db", db, "--backup-dir", bk, "migrate")
     assert code == 0
     assert "applied 0001_initial" in out
+    assert "applied 0002_llm" in out
     code, out, _ = run(capsys, "--db", db, "migrate")
     assert code == 0
     assert "up to date" in out
     code, out, _ = run(capsys, "--db", db, "status")
-    assert "schema version: 1" in out
+    assert "schema version: 2" in out
     assert "pending migrations: none" in out
 
 
@@ -143,3 +144,78 @@ def test_gen_key(capsys) -> None:
     code, out, _ = run(capsys, "gen-key")
     assert code == 0
     assert len(out.strip()) >= 32
+
+
+# --- M2: llm-check (no inference) ------------------------------------------------------------
+
+
+@pytest.fixture
+def llm_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> pytest.MonkeyPatch:
+    monkeypatch.chdir(tmp_path)  # no stray .env
+    for name in ("LLM_MODE", "OLLAMA_URL", "LLM_MODEL", "LLM_TIMEOUT_S"):
+        monkeypatch.delenv(f"FLOWPILOT_{name}", raising=False)
+    return monkeypatch
+
+
+def _mock_ollama(monkeypatch: pytest.MonkeyPatch, handler) -> list:
+    import httpx
+
+    from flowpilot import cli
+    from flowpilot.llm.client import OllamaClient
+
+    seen: list = []
+
+    def recording(request):
+        seen.append((request.method, request.url.path))
+        return handler(request)
+
+    def factory(**kwargs):
+        return OllamaClient(**kwargs, transport=httpx.MockTransport(recording))
+
+    monkeypatch.setattr(cli, "OllamaClient", factory)
+    return seen
+
+
+def test_llm_check_ok_and_uses_tags_only(capsys, llm_env) -> None:
+    import httpx
+
+    seen = _mock_ollama(
+        llm_env, lambda r: httpx.Response(200, json={"models": [{"name": "qwen2.5:3b"}]})
+    )
+    code, out, _ = run(capsys, "llm-check")
+    assert code == 0
+    assert "mode: off" in out
+    assert "FLOWPILOT_LLM_MODE=off" in out
+    assert "OK model 'qwen2.5:3b' is installed" in out
+    assert seen == [("GET", "/api/tags")]  # never /api/chat or /api/pull
+
+
+def test_llm_check_model_missing(capsys, llm_env) -> None:
+    import httpx
+
+    llm_env.setenv("FLOWPILOT_LLM_MODE", "ollama")
+    llm_env.setenv("FLOWPILOT_LLM_MODEL", "llama9:70b")
+    _mock_ollama(llm_env, lambda r: httpx.Response(200, json={"models": []}))
+    code, out, _ = run(capsys, "llm-check")
+    assert code == 1
+    assert "installed models: none" in out
+    assert "nothing was downloaded" in out
+
+
+def test_llm_check_unreachable(capsys, llm_env) -> None:
+    import httpx
+
+    def refuse(request):
+        raise httpx.ConnectError("refused")
+
+    _mock_ollama(llm_env, refuse)
+    code, out, _ = run(capsys, "llm-check")
+    assert code == 1
+    assert "FAIL ollama unreachable" in out
+
+
+def test_llm_check_rejects_unsafe_url(capsys, llm_env) -> None:
+    llm_env.setenv("FLOWPILOT_OLLAMA_URL", "http://203.0.113.5:11434")
+    code, _, err = run(capsys, "llm-check")
+    assert code == 1
+    assert "loopback" in err

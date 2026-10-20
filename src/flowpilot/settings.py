@@ -7,17 +7,64 @@ not a warning.
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlsplit
 
 ENV_PREFIX = "FLOWPILOT_"
 MIN_API_KEY_LENGTH = 32
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 
+LLM_MODES = ("off", "ollama")
+LLM_TIMEOUT_RANGE_S = (5.0, 180.0)
+_MODEL_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}$")
+
 
 class SettingsError(ValueError):
     """Raised when configuration is missing or unsafe."""
+
+
+@dataclass(frozen=True)
+class LLMConfig:
+    """LLM calls are off unless explicitly enabled; Ollama must be on a loopback address."""
+
+    mode: str = "off"
+    ollama_url: str = "http://127.0.0.1:11434"
+    model: str = "qwen2.5:3b"
+    timeout_s: float = 60.0
+
+    def __post_init__(self) -> None:
+        if self.mode not in LLM_MODES:
+            raise SettingsError(
+                f"FLOWPILOT_LLM_MODE={self.mode!r} is invalid; allowed: {', '.join(LLM_MODES)}."
+            )
+        parts = urlsplit(self.ollama_url)
+        if (
+            parts.scheme not in {"http", "https"}
+            or parts.hostname not in LOOPBACK_HOSTS
+            or parts.username
+            or parts.password
+            or parts.path not in {"", "/"}
+            or parts.query
+            or parts.fragment
+        ):
+            raise SettingsError(
+                f"FLOWPILOT_OLLAMA_URL={self.ollama_url!r} must be a bare http(s) URL on a "
+                "loopback address, e.g. http://127.0.0.1:11434."
+            )
+        if not _MODEL_NAME.match(self.model):
+            raise SettingsError(f"FLOWPILOT_LLM_MODEL={self.model!r} is not a valid model name.")
+        low, high = LLM_TIMEOUT_RANGE_S
+        if not low <= self.timeout_s <= high:
+            raise SettingsError(
+                f"FLOWPILOT_LLM_TIMEOUT_S={self.timeout_s} must be between {low:g} and {high:g}."
+            )
+
+    @property
+    def enabled(self) -> bool:
+        return self.mode == "ollama"
 
 
 @dataclass(frozen=True)
@@ -28,6 +75,7 @@ class Settings:
     host: str = "127.0.0.1"
     port: int = 8000
     enable_docs: bool = False
+    llm: LLMConfig = field(default_factory=LLMConfig)
 
     def __post_init__(self) -> None:
         if len(self.api_key) < MIN_API_KEY_LENGTH:
@@ -47,7 +95,7 @@ class Settings:
         return (
             f"Settings(api_key='***', db_path={str(self.db_path)!r}, "
             f"backup_dir={str(self.backup_dir)!r}, host={self.host!r}, port={self.port}, "
-            f"enable_docs={self.enable_docs})"
+            f"enable_docs={self.enable_docs}, llm={self.llm!r})"
         )
 
 
@@ -107,6 +155,28 @@ def load_storage_paths(
     return _storage(_merged_env(environ, env_file))
 
 
+def _llm(merged: Mapping[str, str]) -> LLMConfig:
+    defaults = LLMConfig()
+    timeout_raw = merged.get(ENV_PREFIX + "LLM_TIMEOUT_S") or str(defaults.timeout_s)
+    try:
+        timeout_s = float(timeout_raw)
+    except ValueError as exc:
+        raise SettingsError(f"FLOWPILOT_LLM_TIMEOUT_S={timeout_raw!r} is not a number.") from exc
+    return LLMConfig(
+        mode=(merged.get(ENV_PREFIX + "LLM_MODE") or defaults.mode).strip().lower(),
+        ollama_url=merged.get(ENV_PREFIX + "OLLAMA_URL") or defaults.ollama_url,
+        model=merged.get(ENV_PREFIX + "LLM_MODEL") or defaults.model,
+        timeout_s=timeout_s,
+    )
+
+
+def load_llm_config(
+    environ: Mapping[str, str] | None = None, env_file: Path | None = Path(".env")
+) -> LLMConfig:
+    """LLM settings only, for `flowpilot-admin llm-check` (no API key required)."""
+    return _llm(_merged_env(environ, env_file))
+
+
 def load_settings(
     environ: Mapping[str, str] | None = None, env_file: Path | None = Path(".env")
 ) -> Settings:
@@ -136,4 +206,5 @@ def load_settings(
         host=get("HOST", "127.0.0.1") or "127.0.0.1",
         port=port,
         enable_docs=_parse_bool("FLOWPILOT_ENABLE_DOCS", get("ENABLE_DOCS", "false") or ""),
+        llm=_llm(merged),
     )

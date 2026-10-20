@@ -94,3 +94,25 @@ def test_health_unavailable_when_db_unreadable(tmp_path: Path) -> None:
     response = TestClient(create_app(s)).get("/health")
     assert response.status_code == 503
     assert response.json()["database"] == "unavailable"
+
+
+def test_llm_client_built_from_settings_and_closed(settings: Settings) -> None:
+    from flowpilot.llm.client import OllamaClient
+    from flowpilot.settings import LLMConfig
+
+    enabled = Settings(
+        api_key=settings.api_key,
+        db_path=settings.db_path,
+        backup_dir=settings.backup_dir,
+        llm=LLMConfig(mode="ollama"),
+    )
+    app = create_app(enabled)
+    client = app.state.llm
+    assert isinstance(client, OllamaClient)  # constructing it makes no network call
+    with TestClient(app):
+        pass
+    assert client._http.is_closed
+
+
+def test_llm_client_absent_when_mode_off(settings: Settings) -> None:
+    assert create_app(settings).state.llm is None

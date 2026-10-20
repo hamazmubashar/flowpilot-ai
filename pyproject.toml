@@ -10,12 +10,13 @@ license = { text = "MIT" }
 dependencies = [
     "fastapi>=0.115",   # approved API framework; brings pydantic for request validation
     "uvicorn>=0.30",    # ASGI server needed to serve FastAPI locally
+    "httpx>=0.27",      # local Ollama client (connect/read timeouts, MockTransport for tests);
+                        # also required by fastapi.testclient.TestClient
 ]
 
 [dependency-groups]
 dev = [
     "pytest>=8",        # test runner
-    "httpx>=0.27",      # required by fastapi.testclient.TestClient
     "coverage>=7",      # coverage measurement for the 80% acceptance gate
     "ruff>=0.6",        # lint + format in one tool
 ]
@@ -33,7 +34,10 @@ module-name = "flowpilot"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra --strict-markers"
+addopts = "-ra --strict-markers -m 'not ollama'"
+markers = [
+    "ollama: live inference against a local Ollama server (opt-in: FLOWPILOT_TEST_OLLAMA=1 pytest -m ollama)",
+]
 
 [tool.coverage.run]
 source = ["flowpilot"]

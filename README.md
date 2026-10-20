@@ -4,8 +4,9 @@ A production-style AI business workflow automation platform for **Northstar Digi
 fictional B2B consultancy. Portfolio project: synthetic data only, zero paid APIs, everything runs
 locally, and every outbound message requires human approval.
 
-> **Status: Milestone 1 (Foundation & Core API).** Deterministic lead intake, scoring, audit, and
-> recovery tooling. No LLM, no n8n, no Docker in this milestone.
+> **Status: Milestone 2 (Local LLM Integration).** M1 deterministic intake, scoring, audit, and
+> recovery, plus advisory LLM qualification and reply drafting via a local Ollama model with
+> deterministic fallback. LLM calls are **off by default**. No n8n, no Docker yet.
 
 ## What M1 does
 
@@ -60,6 +61,10 @@ All endpoints except `/health` require `X-API-Key`. Optional headers: `Idempoten
 | GET | `/leads?status=&tier=&limit=&offset=` | Paginated list with score summary |
 | GET | `/leads/{id}` | Lead with full score breakdown |
 | GET | `/leads/{id}/audit` | Audit trail for a lead |
+| POST | `/leads/{id}/qualification` | Advisory assessment (LLM or rules fallback) → `201` |
+| GET | `/leads/{id}/qualification` | Latest assessment (`404 assessment_not_found` if none) |
+| POST | `/leads/{id}/drafts` | New reply draft version (LLM or template) → `201`; `409` unless `scored`/`drafted` |
+| GET | `/leads/{id}/drafts` | All draft versions, oldest first |
 
 ```bash
 source .env
@@ -83,6 +88,7 @@ Swagger UI is disabled by default because it loads assets from a public CDN; set
 | `flowpilot-admin restore FILE --yes` | Verify backup, save current DB, restore |
 | `flowpilot-admin verify` | Integrity, foreign keys, migration checksums |
 | `flowpilot-admin gen-key` | Generate an API key |
+| `flowpilot-admin llm-check` | Ollama reachable on loopback + model installed (`/api/tags` only; no inference, no download) |
 
 Recovery procedures: [docs/runbook.md](docs/runbook.md). Scoring rules:
 [docs/scoring-rules.md](docs/scoring-rules.md).
@@ -107,7 +113,59 @@ the build.
 - Audit log is append-only (UPDATE/DELETE blocked by triggers).
 - No automatic approval and no real sending exist anywhere in the codebase or schema.
 
-## Known limitations (M1)
+## Local LLM (M2)
+
+Qualification and drafting are **advisory**. They never change a lead's score, tier, or route, and
+cannot approve or send anything: approvals must come from a `human` actor and the outbox accepts
+only `simulated` messages for an approved draft (database-enforced since M1). Drafting moves a lead
+from `scored` to `drafted` and nothing further.
+
+**Enable explicitly** (default `FLOWPILOT_LLM_MODE=off` uses deterministic fallbacks only):
+
+Add these lines to `.env` (the URL must be loopback; anything else is a startup error):
+
+```dotenv
+FLOWPILOT_LLM_MODE=ollama
+FLOWPILOT_OLLAMA_URL=http://127.0.0.1:11434
+FLOWPILOT_LLM_MODEL=qwen2.5:3b
+FLOWPILOT_LLM_TIMEOUT_S=60
+```
+
+`.env` comments must be on their own lines; an inline `# ...` after a value becomes part of the
+value. Then verify before starting the API:
+
+```bash
+uv run flowpilot-admin llm-check
+```
+
+Every qualification or draft request for an eligible lead returns a usable result (`201`); only
+auth, unknown-lead, ineligible-status, and validation errors (`401`/`404`/`409`/`422`) do not. The
+pipeline per request:
+
+1. **Pre-screen** company name, contact name, and message for prompt-injection patterns. A match
+   skips the model entirely (`fallback_reason: injection_suspected`).
+2. **Call Ollama** (`/api/chat`, `stream: false`, `temperature: 0`, fixed seed) with a versioned
+   system prompt; lead text is sent as delimited JSON data, never as instructions, and the contact
+   email is never sent. The JSON schema of the expected output is passed as `format`.
+3. **Validate** the reply strictly (Pydantic, unknown fields rejected), then apply **output guards**:
+   drafts may not contain links, email addresses, phone numbers, prices, placeholders, role markers,
+   or echoed injection text.
+4. **Fall back** deterministically on any failure: rules-based assessment or a route-specific
+   template draft. `fallback_reason` is one of `disabled`, `injection_suspected`, `unavailable`,
+   `timeout`, `model_missing`, `busy`, `invalid_output`, `guard_rejected`.
+
+Each attempt is recorded in `llm_runs` (model, prompt version, outcome, latency, input hash,
+truncated raw output) and in the audit log. Only one generation runs at a time.
+
+**Model licensing (unverified).** `ollama show qwen2.5:3b` reports the *Qwen RESEARCH LICENSE
+AGREEMENT*, which appears to restrict commercial use; `gemma3:1b` reports the *Gemma Terms of Use*.
+This project uses them only for a non-commercial portfolio demo and makes **no claim of commercial
+suitability**. Review the license text yourself before any other use; the model is configurable.
+
+Live checks against a real model are opt-in and never part of the default suite:
+`FLOWPILOT_TEST_OLLAMA=1 uv run pytest -m ollama -s`.
+
+## Known limitations (M1–M2)
 
 - **One shared API key.** All clients use the same `FLOWPILOT_API_KEY`; there are no per-client
   keys or scopes.
@@ -119,7 +177,18 @@ the build.
 - **Plain HTTP.** No TLS, because the service is restricted to loopback addresses.
 - **Draft, approval, and outbox tables exist, but their API endpoints are deferred until M4.**
   Their schema guardrails are in place and tested; nothing writes to them yet.
-- **LLM integration is deferred until M2.** Scoring and routing are rules-only.
+- **Scoring and routing remain rules-only.** LLM output is advisory and is never fed back into
+  them.
+- **The injection pre-screen is heuristic.** It will miss novel phrasings and occasionally flag
+  benign text (which then gets a template draft). The primary defence is that model output has no
+  authority.
+- **LLM calls are synchronous.** A request waits for generation (up to `FLOWPILOT_LLM_TIMEOUT_S`;
+  the first call also loads the model), and only one generation runs at a time; concurrent
+  requests wait up to 5 s, then fall back with `busy`.
+- **Live model quality, latency, and Ollama's enforcement of `format` schemas are not yet
+  measured** on this hardware; the default suite uses a fake client. Strict validation and
+  fallback make the API safe either way.
+- **Draft quality from a 3B model is limited.** Drafts are starting points for human review.
 
 ## License
 

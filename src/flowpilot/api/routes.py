@@ -9,22 +9,29 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, R
 
 from flowpilot.api.deps import Actor, Conn, require_api_key
 from flowpilot.api.schemas import (
+    AssessmentOut,
     AuditEntry,
+    DraftOut,
     ErrorResponse,
     Health,
     LeadDetail,
     LeadPage,
     LeadSubmission,
     LeadSummary,
+    LLMRunInfo,
     ScoreSummary,
 )
 from flowpilot.db import repository as repo
 from flowpilot.db.connection import connect
 from flowpilot.db.migrate import pending
 from flowpilot.domain.models import LeadIn, LeadStatus, Tier
+from flowpilot.services.assist import draft_reply, qualify_lead
 from flowpilot.services.intake import submit_lead
 
 IDEMPOTENCY_KEY_PATTERN = r"^[A-Za-z0-9._:-]{1,255}$"
+IdempotencyKey = Annotated[
+    str | None, Header(alias="Idempotency-Key", pattern=IDEMPOTENCY_KEY_PATTERN)
+]
 
 public = APIRouter()
 protected = APIRouter(
@@ -146,3 +153,108 @@ def get_lead_audit(lead_id: int, conn: Conn) -> list[AuditEntry]:
     if repo.get_lead(conn, lead_id) is None:
         raise _not_found(lead_id)
     return [AuditEntry(**entry) for entry in repo.list_audit(conn, "lead", lead_id)]
+
+
+# --- M2: advisory qualification and drafting -------------------------------------------------
+
+
+def _assessment_out(data: dict) -> AssessmentOut:
+    run = LLMRunInfo(
+        model=data.pop("model"),
+        prompt_version=data.pop("prompt_version"),
+        outcome=data.pop("outcome"),
+        fallback_reason=data.pop("fallback_reason"),
+        latency_ms=data.pop("latency_ms"),
+    )
+    return AssessmentOut(**data, run=run)
+
+
+def _replay_header(response: Response, replayed: bool) -> None:
+    if replayed:
+        response.headers["Idempotent-Replayed"] = "true"
+
+
+@protected.post(
+    "/leads/{lead_id}/qualification",
+    response_model=AssessmentOut,
+    status_code=status.HTTP_201_CREATED,
+    responses={404: {"model": ErrorResponse}, 422: {"description": "Idempotency key reused"}},
+)
+def create_qualification(
+    lead_id: int,
+    request: Request,
+    response: Response,
+    conn: Conn,
+    actor: Actor,
+    idempotency_key: IdempotencyKey = None,
+) -> AssessmentOut:
+    result = qualify_lead(
+        conn,
+        lead_id,
+        llm=request.app.state.llm,
+        actor=actor,
+        clock=request.app.state.clock,
+        idempotency_key=idempotency_key,
+        request_id=request.state.request_id,
+    )
+    _replay_header(response, result.replayed)
+    return _assessment_out(repo.get_assessment(conn, result.resource_id))
+
+
+@protected.get(
+    "/leads/{lead_id}/qualification",
+    response_model=AssessmentOut,
+    responses={404: {"model": ErrorResponse}},
+)
+def get_qualification(lead_id: int, conn: Conn) -> AssessmentOut:
+    if repo.get_lead(conn, lead_id) is None:
+        raise _not_found(lead_id)
+    latest = repo.get_latest_assessment(conn, lead_id)
+    if latest is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "assessment_not_found", "message": f"lead {lead_id} not qualified"},
+        )
+    return _assessment_out(latest)
+
+
+@protected.post(
+    "/leads/{lead_id}/drafts",
+    response_model=DraftOut,
+    status_code=status.HTTP_201_CREATED,
+    responses={
+        404: {"model": ErrorResponse},
+        409: {"model": ErrorResponse, "description": "Lead status does not allow drafting"},
+        422: {"description": "Idempotency key reused"},
+    },
+)
+def create_draft(
+    lead_id: int,
+    request: Request,
+    response: Response,
+    conn: Conn,
+    actor: Actor,
+    idempotency_key: IdempotencyKey = None,
+) -> DraftOut:
+    result = draft_reply(
+        conn,
+        lead_id,
+        llm=request.app.state.llm,
+        actor=actor,
+        clock=request.app.state.clock,
+        idempotency_key=idempotency_key,
+        request_id=request.state.request_id,
+    )
+    _replay_header(response, result.replayed)
+    return DraftOut(**dict(repo.get_draft(conn, result.resource_id)))
+
+
+@protected.get(
+    "/leads/{lead_id}/drafts",
+    response_model=list[DraftOut],
+    responses={404: {"model": ErrorResponse}},
+)
+def get_drafts(lead_id: int, conn: Conn) -> list[DraftOut]:
+    if repo.get_lead(conn, lead_id) is None:
+        raise _not_found(lead_id)
+    return [DraftOut(**dict(row)) for row in repo.list_drafts(conn, lead_id)]

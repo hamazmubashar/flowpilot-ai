@@ -22,6 +22,8 @@ EXPECTED_TABLES = {
     "audit_log",
     "idempotency_keys",
     "schema_migrations",
+    "llm_runs",
+    "lead_assessments",
 }
 
 
@@ -30,7 +32,7 @@ def test_initial_schema_applied(conn: sqlite3.Connection) -> None:
         r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
     }
     assert tables >= EXPECTED_TABLES
-    assert current_version(conn) == 1
+    assert current_version(conn) == 2
     assert pending(conn) == []
 
 
@@ -41,7 +43,7 @@ def test_wal_and_foreign_keys_enabled(conn: sqlite3.Connection) -> None:
 
 def test_migrate_is_idempotent(conn: sqlite3.Connection) -> None:
     assert migrate(conn) == []
-    assert current_version(conn) == 1
+    assert current_version(conn) == 2
 
 
 def test_fresh_database_reports_version_zero(tmp_path: Path) -> None:
@@ -49,7 +51,7 @@ def test_fresh_database_reports_version_zero(tmp_path: Path) -> None:
     try:
         assert applied(fresh) == {}
         assert current_version(fresh) == 0
-        assert [m.version for m in pending(fresh)] == [1]
+        assert [m.version for m in pending(fresh)] == [1, 2]
     finally:
         fresh.close()
 

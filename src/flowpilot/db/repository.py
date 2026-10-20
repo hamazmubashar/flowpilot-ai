@@ -9,7 +9,14 @@ import json
 import sqlite3
 from typing import Any
 
-from flowpilot.domain.models import LeadIn, LeadStatus, ScoreResult
+from flowpilot.domain.models import (
+    Assessment,
+    DraftContent,
+    DraftGenerator,
+    LeadIn,
+    LeadStatus,
+    ScoreResult,
+)
 
 LEAD_COLUMNS = (
     "id, company_name, contact_name, contact_email, company_size, industry, service_interest, "
@@ -228,3 +235,164 @@ def insert_idempotency(
         """,
         (key, scope, request_hash, status_code, resource_type, str(resource_id), now),
     )
+
+
+# --- LLM runs, assessments, drafts (M2) -------------------------------------------------------
+
+_ASSESSMENT_SELECT = """
+    SELECT a.id, a.lead_id, a.llm_run_id, a.source, a.summary, a.service_line, a.urgency,
+           a.flags_json, a.created_at, r.model, r.prompt_version, r.outcome, r.fallback_reason,
+           r.latency_ms
+    FROM lead_assessments a JOIN llm_runs r ON r.id = a.llm_run_id
+"""
+
+_DRAFT_SELECT = """
+    SELECT id, lead_id, version, subject, body, generator, model, prompt_version, llm_run_id,
+           fallback_reason, created_at
+    FROM drafts
+"""
+
+
+def insert_llm_run(
+    conn: sqlite3.Connection,
+    *,
+    lead_id: int,
+    task: str,
+    mode: str,
+    model: str | None,
+    prompt_version: str,
+    fallback_reason: str | None,
+    error: str | None,
+    latency_ms: int | None,
+    input_sha256: str,
+    raw_output: str | None,
+    now: str,
+) -> int:
+    cur = conn.execute(
+        """
+        INSERT INTO llm_runs (lead_id, task, mode, model, prompt_version, outcome,
+                              fallback_reason, error, latency_ms, input_sha256, raw_output,
+                              created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            lead_id,
+            task,
+            mode,
+            model,
+            prompt_version,
+            "ok" if fallback_reason is None else "fallback",
+            fallback_reason,
+            error,
+            latency_ms,
+            input_sha256,
+            raw_output,
+            now,
+        ),
+    )
+    return int(cur.lastrowid)  # type: ignore[arg-type]
+
+
+def list_llm_runs(conn: sqlite3.Connection, lead_id: int) -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT * FROM llm_runs WHERE lead_id = ? ORDER BY id", (lead_id,)
+    ).fetchall()
+
+
+def insert_assessment(
+    conn: sqlite3.Connection, *, lead_id: int, llm_run_id: int, assessment: Assessment, now: str
+) -> int:
+    cur = conn.execute(
+        """
+        INSERT INTO lead_assessments (lead_id, llm_run_id, source, summary, service_line,
+                                      urgency, flags_json, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            lead_id,
+            llm_run_id,
+            assessment.source.value,
+            assessment.summary,
+            assessment.service_line.value,
+            assessment.urgency.value,
+            _json([f.value for f in assessment.flags]),
+            now,
+        ),
+    )
+    return int(cur.lastrowid)  # type: ignore[arg-type]
+
+
+def _assessment_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
+    if row is None:
+        return None
+    data = dict(row)
+    data["flags"] = json.loads(data.pop("flags_json"))
+    return data
+
+
+def get_assessment(conn: sqlite3.Connection, assessment_id: int) -> dict[str, Any] | None:
+    return _assessment_dict(
+        conn.execute(f"{_ASSESSMENT_SELECT} WHERE a.id = ?", (assessment_id,)).fetchone()
+    )
+
+
+def get_latest_assessment(conn: sqlite3.Connection, lead_id: int) -> dict[str, Any] | None:
+    return _assessment_dict(
+        conn.execute(
+            f"{_ASSESSMENT_SELECT} WHERE a.lead_id = ? ORDER BY a.id DESC LIMIT 1",
+            (lead_id,),
+        ).fetchone()
+    )
+
+
+def next_draft_version(conn: sqlite3.Connection, lead_id: int) -> int:
+    row = conn.execute(
+        "SELECT COALESCE(MAX(version), 0) + 1 FROM drafts WHERE lead_id = ?", (lead_id,)
+    ).fetchone()
+    return int(row[0])
+
+
+def insert_draft(
+    conn: sqlite3.Connection,
+    *,
+    lead_id: int,
+    version: int,
+    content: DraftContent,
+    generator: DraftGenerator,
+    model: str | None,
+    prompt_version: str | None,
+    llm_run_id: int | None,
+    fallback_reason: str | None,
+    now: str,
+) -> int:
+    cur = conn.execute(
+        """
+        INSERT INTO drafts (lead_id, version, subject, body, generator, model, prompt_version,
+                            llm_run_id, fallback_reason, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            lead_id,
+            version,
+            content.subject,
+            content.body,
+            generator.value,
+            model,
+            prompt_version,
+            llm_run_id,
+            fallback_reason,
+            now,
+        ),
+    )
+    return int(cur.lastrowid)  # type: ignore[arg-type]
+
+
+def get_draft(conn: sqlite3.Connection, draft_id: int) -> sqlite3.Row | None:
+    return conn.execute(f"{_DRAFT_SELECT} WHERE id = ?", (draft_id,)).fetchone()
+
+
+def list_drafts(conn: sqlite3.Connection, lead_id: int) -> list[sqlite3.Row]:
+    return conn.execute(
+        f"{_DRAFT_SELECT} WHERE lead_id = ? ORDER BY version",
+        (lead_id,),
+    ).fetchall()

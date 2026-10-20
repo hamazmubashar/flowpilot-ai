@@ -1,4 +1,5 @@
-"""`flowpilot-admin`: migrations, seeding, backup/restore, integrity checks, key generation."""
+"""`flowpilot-admin`: migrations, seeding, backup/restore, integrity checks, key generation,
+and a no-inference Ollama readiness check."""
 
 from __future__ import annotations
 
@@ -13,8 +14,9 @@ from pathlib import Path
 from flowpilot.db.connection import connect
 from flowpilot.db.migrate import MigrationError, current_version, migrate, pending
 from flowpilot.domain.models import LeadIn
+from flowpilot.llm.client import LLMError, OllamaClient
 from flowpilot.services.intake import submit_lead
-from flowpilot.settings import load_storage_paths
+from flowpilot.settings import SettingsError, load_llm_config, load_storage_paths
 from flowpilot.synthetic import DEFAULT_COUNT, DEFAULT_SEED, generate_leads
 
 SEED_ACTOR = "seed-script"
@@ -183,6 +185,30 @@ def cmd_gen_key(_: Path, __: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_llm_check(_: Path, __: argparse.Namespace) -> int:
+    """Verify Ollama is reachable on loopback and the model is installed. No inference."""
+    config = load_llm_config()
+    print(f"mode: {config.mode}  url: {config.ollama_url}  model: {config.model}")
+    if not config.enabled:
+        print("note: FLOWPILOT_LLM_MODE=off, so the API uses deterministic fallbacks only")
+    client = OllamaClient(
+        base_url=config.ollama_url, model=config.model, timeout_s=config.timeout_s
+    )
+    try:
+        installed = client.list_models()
+    except LLMError as exc:
+        print(f"FAIL ollama unreachable: {exc}")
+        return 1
+    finally:
+        client.close()
+    print(f"installed models: {', '.join(installed) or 'none'}")
+    if config.model not in installed:
+        print(f"FAIL model {config.model!r} is not installed (nothing was downloaded)")
+        return 1
+    print(f"OK model {config.model!r} is installed")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="flowpilot-admin", description=__doc__)
     parser.add_argument("--db", type=Path, help="database path (default: FLOWPILOT_DB_PATH)")
@@ -210,6 +236,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("verify", help="integrity + migration checks").set_defaults(func=cmd_verify)
     sub.add_parser("gen-key", help="print a new random API key").set_defaults(func=cmd_gen_key)
+    sub.add_parser(
+        "llm-check", help="check Ollama reachability and model presence (no inference)"
+    ).set_defaults(func=cmd_llm_check)
     return parser
 
 
@@ -220,7 +249,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args.backup_dir = args.backup_dir or paths.backup_dir
     try:
         return args.func(db, args)
-    except (CommandError, MigrationError) as exc:
+    except (CommandError, MigrationError, SettingsError) as exc:
         print(f"flowpilot-admin: {exc}", file=sys.stderr)
         return 1
 

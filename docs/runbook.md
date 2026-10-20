@@ -37,6 +37,19 @@ curl -s http://127.0.0.1:8000/health
 5. Lost writes: anything after the backup timestamp. Clients that retry with the same
    `Idempotency-Key` can safely resubmit.
 
+## Before applying migrations (e.g. upgrading to M2's `0002_llm`)
+
+Migrations are forward-only; the rollback path is restoring a backup. Always back up first:
+
+```bash
+uv run flowpilot-admin backup      # note the printed path
+uv run flowpilot-admin migrate
+uv run flowpilot-admin verify
+```
+
+If the upgraded version must be abandoned, stop the API and
+`uv run flowpilot-admin restore <backup path> --yes` with the previous code checked out.
+
 ## Scenario: failed migration
 
 Each migration runs in its own transaction; a failure rolls back that file completely and the
@@ -72,3 +85,31 @@ mv var/flowpilot.db var/flowpilot.db.old      # stop the API first; also move -w
 uv run flowpilot-admin migrate
 uv run flowpilot-admin seed                   # same seed => identical data
 ```
+
+## Scenario: LLM drafts/qualifications are all fallbacks (M2)
+
+Check `fallback_reason` on the response, or the latest runs:
+
+```bash
+sqlite3 var/flowpilot.db \
+  "SELECT id, task, model, outcome, fallback_reason, latency_ms, error FROM llm_runs ORDER BY id DESC LIMIT 10"
+```
+
+| `fallback_reason` | Meaning | Fix |
+|---|---|---|
+| `disabled` | `FLOWPILOT_LLM_MODE=off` (the default) | Set `FLOWPILOT_LLM_MODE=ollama` in `.env`, restart the API |
+| `unavailable` | Ollama not reachable / HTTP error | Start Ollama (`ollama serve` or the app); `flowpilot-admin llm-check` |
+| `model_missing` | Model not installed | `ollama list`; choose an installed model in `FLOWPILOT_LLM_MODEL`. FlowPilot never downloads models |
+| `timeout` | Generation exceeded `FLOWPILOT_LLM_TIMEOUT_S` | First call includes model load; raise the timeout (max 180) or close memory-heavy apps |
+| `busy` | Another generation held the single slot > 5 s | Expected under concurrent load; retry later |
+| `invalid_output` | Reply was not valid JSON for the schema | Inspect `llm_runs.raw_output`; consider another model or a prompt revision (bump `PROMPT_VERSION`) |
+| `guard_rejected` | Draft/summary contained links, contacts, prices, placeholders, or injection text | `llm_runs.error` lists the violations; the template draft was used instead |
+| `injection_suspected` | Lead text matched the pre-screen; the model was not called | Expected for hostile input; review the lead manually |
+
+Fallbacks are always safe to keep: they are deterministic, pass the same guards, and still require
+human approval (M4) before anything is sent.
+
+## Scenario: turn the LLM off immediately
+
+Set `FLOWPILOT_LLM_MODE=off` in `.env` and restart the API. All qualification and drafting
+requests then use deterministic fallbacks; nothing else changes.

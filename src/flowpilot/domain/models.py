@@ -144,3 +144,46 @@ class ScoreResult(BaseModel):
     tier: Tier
     route: Route
     breakdown: list[ScoreComponent]
+
+
+# --- M2: advisory qualification and drafting -------------------------------------------------
+
+
+class Urgency(StrEnum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+
+
+class AssessmentFlag(StrEnum):
+    REQUESTS_PRICING = "requests_pricing"
+    OFF_TOPIC = "off_topic"
+    UNCLEAR_NEED = "unclear_need"
+    # Set only by the deterministic pre-screen, never accepted from model output.
+    POSSIBLE_PROMPT_INJECTION = "possible_prompt_injection"
+
+
+class AssessmentSource(StrEnum):
+    LLM = "llm"
+    RULES = "rules"
+
+
+class DraftGenerator(StrEnum):
+    TEMPLATE = "template"
+    LLM = "llm"
+    HUMAN_EDIT = "human_edit"
+
+
+class Assessment(BaseModel):
+    """Advisory qualification. Never feeds scoring, routing, or approval."""
+
+    source: AssessmentSource
+    summary: str
+    service_line: ServiceLine
+    urgency: Urgency
+    flags: list[AssessmentFlag]
+
+
+class DraftContent(BaseModel):
+    subject: str
+    body: str
