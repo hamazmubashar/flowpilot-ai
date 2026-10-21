@@ -4,9 +4,10 @@ A production-style AI business workflow automation platform for **Northstar Digi
 fictional B2B consultancy. Portfolio project: synthetic data only, zero paid APIs, everything runs
 locally, and every outbound message requires human approval.
 
-> **Status: Milestone 2 (Local LLM Integration).** M1 deterministic intake, scoring, audit, and
-> recovery, plus advisory LLM qualification and reply drafting via a local Ollama model with
-> deterministic fallback. LLM calls are **off by default**. No n8n, no Docker yet.
+> **Status: Milestone 3 (n8n Orchestration), in progress.** M1 deterministic intake, scoring,
+> audit, and recovery, plus advisory LLM qualification and reply drafting via a local Ollama model
+> with deterministic fallback. LLM calls are **off by default**. M3 in progress: a hardened local
+> n8n runtime (Docker) is configured; **no n8n workflows exist yet**.
 
 ## What M1 does
 
@@ -178,7 +179,43 @@ suitability**. Review the license text yourself before any other use; the model 
 Live checks against a real model are opt-in and never part of the default suite:
 `FLOWPILOT_TEST_OLLAMA=1 uv run pytest -m ollama -s`.
 
-## Known limitations (M1–M2)
+## n8n runtime (M3, in progress)
+
+`compose.yaml` runs a pinned, hardened n8n (`n8nio/n8n@sha256:c72fa9f1…`, n8n 2.44.4) for later
+workflow orchestration. **No workflows are included yet**; n8n will only ever call the FastAPI
+endpoints above, never send messages, and never approve anything.
+
+```
+host 127.0.0.1:5678 ─► ui-gateway ─────────────┐
+                                               ▼
+                       [ n8n ]  ── n8n_internal network (internal: no route out) ──
+                          │
+                          └─► api-gateway (alias host.docker.internal) ─► 192.168.65.254:8000 ─► FastAPI 127.0.0.1:8000
+```
+
+- **Egress boundary is the network, not n8n settings.** n8n is attached only to an `internal`
+  Docker network (no default route, no external DNS). Its only ways out are two gateways, each a
+  ~40-line TCP relay (`n8n/gateway/tcp-gateway.js`) with one destination fixed in `compose.yaml`
+  and no proxy logic. Proxy environment variables are not used.
+- **UI is loopback-only** at **`http://localhost:5678`** (use `localhost`, not `127.0.0.1`: the
+  session cookie is scoped to the hostname). It is not reachable from the LAN or on `[::1]`.
+- **Hardening** (defence in depth): telemetry, version checks, templates, personalization, public
+  API and the `mcp-registry` module are disabled; nodes are restricted to a 9-node allowlist (no
+  Code, Execute Command, SSH, email or chat nodes); executions pruned after 7 days; one
+  production execution at a time; containers drop all capabilities.
+
+```bash
+# once: set N8N_ENCRYPTION_KEY in .env (openssl rand -hex 32) and back it up outside the repo
+uv run flowpilot-api                  # FastAPI on 127.0.0.1:8000 (separate terminal)
+docker compose up -d                  # n8n + gateways; refuses to start without the key
+open http://localhost:5678            # create the local owner account on first visit
+docker compose down                   # stop (data stays in var/n8n)
+```
+
+Operations, key loss, and verification steps: [docs/runbook.md](docs/runbook.md#n8n-runtime-m3).
+Design and evidence: [docs/adr/0003-n8n-orchestration.md](docs/adr/0003-n8n-orchestration.md).
+
+## Known limitations (M1–M3)
 
 - **One shared API key.** All clients use the same `FLOWPILOT_API_KEY`; there are no per-client
   keys or scopes.
@@ -223,6 +260,14 @@ Live checks against a real model are opt-in and never part of the default suite:
 - **`llm_runs.raw_output` has no retention limit.** Up to 4 KB of raw model output is stored per
   attempt indefinitely (synthetic data only in this project); a retention policy is not yet
   implemented.
+- **n8n egress isolation is verified only for the tested topology.** It was tested on Docker
+  Desktop 29.8.2 for macOS, where `192.168.65.254` forwards to host loopback. Other Docker
+  versions or Linux need re-testing. The gateways themselves have outbound network access; their
+  safety rests on their fixed-destination code. Anything that reaches FastAPI through the
+  api-gateway can use every endpoint the API key allows.
+- **Browser login to the n8n UI was verified with curl, not a real browser.** The session cookie
+  is `Secure; HttpOnly; SameSite=Lax`, which browsers accept on `http://localhost`.
+- **Losing `N8N_ENCRYPTION_KEY` makes stored n8n credentials unrecoverable.**
 - **Prompt examples can be copied.** The draft prompt includes a worked example (contact "Alex",
   "reporting needs"). A model may copy its name or wording into a real draft; no guard checks that
   the greeting matches the lead's contact name, so human review must catch it.
@@ -230,4 +275,6 @@ Live checks against a real model are opt-in and never part of the default suite:
 ## License
 
 Code: MIT, see [LICENSE](LICENSE). n8n (introduced in M3) is distributed under the Sustainable Use License and is not
-bundled in this repository.
+bundled in this repository; the image is pulled by digest at runtime. That license permits use
+"for your own internal business purposes or for non-commercial or personal use", and excludes
+`.ee.` (Enterprise) files. This project uses n8n only as a local, non-commercial demo.
