@@ -385,3 +385,73 @@ def test_exported_workflow_is_valid(path: Path) -> None:
         if n.get("type") == HTTP_NODE and not n["credentials"]["httpHeaderAuth"].get("id")
     ]
     assert unbound == [], f"committed exports must carry bound credential ids: {unbound}"
+
+
+# --- flowpilot-prepare-next-lead: manual trigger only ----------------------------------------
+
+PREPARE_NEXT_LEAD = ROOT / "n8n" / "workflows" / "flowpilot-prepare-next-lead.json"
+MANUAL_TRIGGER = "n8n-nodes-base.manualTrigger"
+
+
+def _is_trigger(node_type: str) -> bool:
+    """Allowlisted triggers plus anything named like one, so a trigger type that is not on
+    today's allowlist (e.g. `formTrigger`, legacy `cron`) is still caught if it is added later."""
+    short = node_type.rsplit(".", 1)[-1].lower()
+    return (
+        node_type in TRIGGER_NODES
+        or short.endswith("trigger")
+        or short in {"webhook", "cron", "interval"}
+    )
+
+
+def manual_trigger_violations(workflow: dict) -> list[str]:
+    """This workflow may start only when a person clicks Execute in n8n: never on a schedule,
+    an inbound request, or another workflow's error. Disabled triggers count too."""
+    triggers = [n for n in workflow.get("nodes") or [] if _is_trigger(str(n.get("type", "")))]
+    found = [
+        f"{n.get('name', '?')}: trigger {n.get('type')!r} is not manualTrigger"
+        for n in triggers
+        if n.get("type") != MANUAL_TRIGGER
+    ]
+    if not any(n.get("type") == MANUAL_TRIGGER for n in triggers):
+        found.append("workflow must have a manualTrigger node")
+    return found
+
+
+AUTOMATIC_TRIGGERS = [
+    "n8n-nodes-base.scheduleTrigger",
+    "n8n-nodes-base.webhook",
+    "n8n-nodes-base.errorTrigger",
+    "n8n-nodes-base.formTrigger",
+    "n8n-nodes-base.cron",
+]
+
+
+def test_manual_trigger_fixture_passes() -> None:
+    assert manual_trigger_violations(valid_workflow()) == []
+
+
+@pytest.mark.parametrize("trigger_type", AUTOMATIC_TRIGGERS)
+def test_automatic_trigger_substitution_is_rejected(trigger_type: str) -> None:
+    workflow = valid_workflow()
+    _node(workflow, "Start")["type"] = trigger_type
+    violations = manual_trigger_violations(workflow)
+    assert f"Start: trigger {trigger_type!r} is not manualTrigger" in violations
+    assert "workflow must have a manualTrigger node" in violations
+
+
+@pytest.mark.parametrize("trigger_type", AUTOMATIC_TRIGGERS)
+def test_automatic_trigger_beside_manual_is_rejected(trigger_type: str) -> None:
+    workflow = valid_workflow()
+    workflow["nodes"].append(
+        {"name": "Also", "type": trigger_type, "parameters": {}, "disabled": True}
+    )
+    workflow["connections"]["Also"] = _to("Next scored lead")
+    assert manual_trigger_violations(workflow) == [
+        f"Also: trigger {trigger_type!r} is not manualTrigger"
+    ]
+
+
+def test_prepare_next_lead_export_uses_manual_trigger_only() -> None:
+    workflow = json.loads(PREPARE_NEXT_LEAD.read_text(encoding="utf-8"))
+    assert manual_trigger_violations(workflow) == []
