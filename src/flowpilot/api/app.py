@@ -17,6 +17,12 @@ from flowpilot.db.migrate import pending
 from flowpilot.llm.client import LLMClient, OllamaClient
 from flowpilot.services.assist import LeadNotDraftable, LeadNotFound
 from flowpilot.services.intake import Clock, IdempotencyKeyReused, utc_now
+from flowpilot.services.review import (
+    DraftAlreadyDecided,
+    DraftNotFound,
+    DraftSuperseded,
+    LeadNotReviewable,
+)
 from flowpilot.settings import LLMConfig, Settings
 
 REQUEST_ID_HEADER = "X-Request-ID"
@@ -125,6 +131,40 @@ def create_app(
                     "message": f"lead status {exc.status!r} does not allow drafting",
                 }
             },
+        )
+
+    @app.exception_handler(DraftNotFound)
+    async def draft_not_found(_: Request, exc: DraftNotFound) -> JSONResponse:
+        return JSONResponse(
+            status_code=404,
+            content={
+                "detail": {
+                    "code": "draft_not_found",
+                    "message": f"lead {exc.lead_id} has no draft version {exc.version}",
+                }
+            },
+        )
+
+    def _conflict(code: str, message: str) -> JSONResponse:
+        return JSONResponse(status_code=409, content={"detail": {"code": code, "message": message}})
+
+    @app.exception_handler(DraftAlreadyDecided)
+    async def draft_already_decided(_: Request, exc: DraftAlreadyDecided) -> JSONResponse:
+        return _conflict(
+            "draft_already_decided", f"draft version {exc.version} was already {exc.decision}"
+        )
+
+    @app.exception_handler(DraftSuperseded)
+    async def draft_superseded(_: Request, exc: DraftSuperseded) -> JSONResponse:
+        return _conflict(
+            "draft_superseded",
+            f"draft version {exc.version} is superseded by version {exc.latest}",
+        )
+
+    @app.exception_handler(LeadNotReviewable)
+    async def lead_not_reviewable(_: Request, exc: LeadNotReviewable) -> JSONResponse:
+        return _conflict(
+            "lead_not_reviewable", f"lead status {exc.status!r} does not allow a review decision"
         )
 
     app.include_router(public)

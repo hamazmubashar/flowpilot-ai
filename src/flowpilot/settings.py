@@ -76,6 +76,9 @@ class Settings:
     port: int = 8000
     enable_docs: bool = False
     llm: LLMConfig = field(default_factory=LLMConfig)
+    # Second key for human draft review (M4). Unset disables the review endpoints; it must never
+    # be given to n8n or any other automated client.
+    reviewer_key: str | None = None
 
     def __post_init__(self) -> None:
         if len(self.api_key) < MIN_API_KEY_LENGTH:
@@ -83,6 +86,14 @@ class Settings:
                 f"FLOWPILOT_API_KEY must be at least {MIN_API_KEY_LENGTH} characters; "
                 "generate one with `flowpilot-admin gen-key`."
             )
+        if self.reviewer_key is not None:
+            if len(self.reviewer_key) < MIN_API_KEY_LENGTH:
+                raise SettingsError(
+                    f"FLOWPILOT_REVIEWER_KEY must be at least {MIN_API_KEY_LENGTH} characters; "
+                    "generate one with `flowpilot-admin gen-key`."
+                )
+            if self.reviewer_key == self.api_key:
+                raise SettingsError("FLOWPILOT_REVIEWER_KEY must differ from FLOWPILOT_API_KEY.")
         if self.host not in LOOPBACK_HOSTS:
             raise SettingsError(
                 f"FLOWPILOT_HOST={self.host!r} is not a loopback address; "
@@ -95,7 +106,8 @@ class Settings:
         return (
             f"Settings(api_key='***', db_path={str(self.db_path)!r}, "
             f"backup_dir={str(self.backup_dir)!r}, host={self.host!r}, port={self.port}, "
-            f"enable_docs={self.enable_docs}, llm={self.llm!r})"
+            f"enable_docs={self.enable_docs}, llm={self.llm!r}, "
+            f"reviewer_key={'***' if self.reviewer_key else None})"
         )
 
 
@@ -207,4 +219,5 @@ def load_settings(
         port=port,
         enable_docs=_parse_bool("FLOWPILOT_ENABLE_DOCS", get("ENABLE_DOCS", "false") or ""),
         llm=_llm(merged),
+        reviewer_key=get("REVIEWER_KEY") or None,
     )

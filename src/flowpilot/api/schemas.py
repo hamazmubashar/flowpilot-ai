@@ -15,6 +15,7 @@ from flowpilot.domain.models import (
     Industry,
     LeadSource,
     LeadStatus,
+    ReviewDecision,
     Route,
     ScoreResult,
     ServiceLine,
@@ -130,3 +131,27 @@ class DraftOut(BaseModel):
     fallback_reason: str | None
     created_at: str
     requires_human_approval: Literal[True] = True
+
+
+class OutboxOut(BaseModel):
+    """Simulated outbox entry. Nothing is ever sent from FlowPilot."""
+
+    id: int
+    channel: Literal["simulated"]
+    recipient: str
+    subject: str
+    status: Literal["pending", "sent", "failed"]
+    created_at: str
+
+
+class ApprovalOut(BaseModel):
+    id: int
+    lead_id: int
+    draft_id: int
+    version: int
+    decision: ReviewDecision
+    actor_type: Literal["human"]
+    decided_by: str
+    reason: str | None
+    decided_at: str
+    outbox: OutboxOut | None

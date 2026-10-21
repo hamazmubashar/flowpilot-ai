@@ -5,10 +5,21 @@ from __future__ import annotations
 import sqlite3
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    Header,
+    HTTPException,
+    Path,
+    Query,
+    Request,
+    Response,
+    status,
+)
 
-from flowpilot.api.deps import Actor, Conn, require_api_key
+from flowpilot.api.deps import Actor, Conn, Reviewer, require_api_key
 from flowpilot.api.schemas import (
+    ApprovalOut,
     AssessmentOut,
     AuditEntry,
     DraftOut,
@@ -19,14 +30,16 @@ from flowpilot.api.schemas import (
     LeadSubmission,
     LeadSummary,
     LLMRunInfo,
+    OutboxOut,
     ScoreSummary,
 )
 from flowpilot.db import repository as repo
 from flowpilot.db.connection import connect
 from flowpilot.db.migrate import pending
-from flowpilot.domain.models import LeadIn, LeadStatus, Tier
+from flowpilot.domain.models import DraftDecisionIn, LeadIn, LeadStatus, Tier
 from flowpilot.services.assist import draft_reply, qualify_lead
 from flowpilot.services.intake import submit_lead
+from flowpilot.services.review import decide_draft
 
 IDEMPOTENCY_KEY_PATTERN = r"^[A-Za-z0-9._:-]{1,255}$"
 IdempotencyKey = Annotated[
@@ -258,3 +271,67 @@ def get_drafts(lead_id: int, conn: Conn) -> list[DraftOut]:
     if repo.get_lead(conn, lead_id) is None:
         raise _not_found(lead_id)
     return [DraftOut(**dict(row)) for row in repo.list_drafts(conn, lead_id)]
+
+
+# --- M4: human review --------------------------------------------------------------------------
+
+
+def _approval_out(conn: sqlite3.Connection, approval_id: int) -> ApprovalOut:
+    approval = repo.get_approval(conn, approval_id)
+    draft = repo.get_draft(conn, approval["draft_id"])
+    outbox = repo.get_outbox_for_approval(conn, approval_id)
+    return ApprovalOut(
+        id=approval["id"],
+        lead_id=draft["lead_id"],
+        draft_id=draft["id"],
+        version=draft["version"],
+        decision=approval["decision"],
+        actor_type=approval["actor_type"],
+        decided_by=approval["decided_by"],
+        reason=approval["reason"],
+        decided_at=approval["decided_at"],
+        outbox=None
+        if outbox is None
+        else OutboxOut(**{k: outbox[k] for k in OutboxOut.model_fields}),
+    )
+
+
+@protected.post(
+    "/leads/{lead_id}/drafts/{version}/approval",
+    response_model=ApprovalOut,
+    status_code=status.HTTP_201_CREATED,
+    responses={
+        403: {"model": ErrorResponse, "description": "Missing or invalid X-Reviewer-Key"},
+        404: {"model": ErrorResponse},
+        409: {
+            "model": ErrorResponse,
+            "description": "Already decided, superseded, or wrong status",
+        },
+        422: {"description": "Validation error or idempotency key reused"},
+        503: {"model": ErrorResponse, "description": "Review disabled (no reviewer key set)"},
+    },
+)
+def decide(
+    lead_id: int,
+    version: Annotated[int, Path(ge=1)],
+    body: DraftDecisionIn,
+    request: Request,
+    response: Response,
+    conn: Conn,
+    reviewer: Reviewer,
+    idempotency_key: IdempotencyKey = None,
+) -> ApprovalOut:
+    """Record a human reviewer's approval or rejection of one exact draft version. Approval
+    enqueues one simulated outbox entry; nothing is sent."""
+    result = decide_draft(
+        conn,
+        lead_id,
+        version,
+        body,
+        reviewer=reviewer,
+        clock=request.app.state.clock,
+        idempotency_key=idempotency_key,
+        request_id=request.state.request_id,
+    )
+    _replay_header(response, result.replayed)
+    return _approval_out(conn, result.approval_id)

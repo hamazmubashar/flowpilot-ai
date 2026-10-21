@@ -396,3 +396,69 @@ def list_drafts(conn: sqlite3.Connection, lead_id: int) -> list[sqlite3.Row]:
         f"{_DRAFT_SELECT} WHERE lead_id = ? ORDER BY version",
         (lead_id,),
     ).fetchall()
+
+
+def get_draft_by_version(
+    conn: sqlite3.Connection, lead_id: int, version: int
+) -> sqlite3.Row | None:
+    return conn.execute(
+        f"{_DRAFT_SELECT} WHERE lead_id = ? AND version = ?", (lead_id, version)
+    ).fetchone()
+
+
+# --- Human review and simulated outbox (M4) ---------------------------------------------------
+
+
+def insert_approval(
+    conn: sqlite3.Connection,
+    *,
+    draft_id: int,
+    decision: str,
+    decided_by: str,
+    reason: str | None,
+    now: str,
+) -> int:
+    # actor_type is fixed: the schema accepts only 'human', and so does this code.
+    cur = conn.execute(
+        """
+        INSERT INTO approvals (draft_id, decision, actor_type, decided_by, reason, decided_at)
+        VALUES (?, ?, 'human', ?, ?, ?)
+        """,
+        (draft_id, decision, decided_by, reason, now),
+    )
+    return int(cur.lastrowid)  # type: ignore[arg-type]
+
+
+def get_approval(conn: sqlite3.Connection, approval_id: int) -> sqlite3.Row | None:
+    return conn.execute("SELECT * FROM approvals WHERE id = ?", (approval_id,)).fetchone()
+
+
+def get_approval_for_draft(conn: sqlite3.Connection, draft_id: int) -> sqlite3.Row | None:
+    return conn.execute("SELECT * FROM approvals WHERE draft_id = ?", (draft_id,)).fetchone()
+
+
+def insert_outbox(
+    conn: sqlite3.Connection,
+    *,
+    approval_id: int,
+    draft_id: int,
+    recipient: str,
+    subject: str,
+    body: str,
+    now: str,
+) -> int:
+    # channel and status use the schema defaults: 'simulated' (the only allowed value) and
+    # 'pending'. The outbox_requires_approved_draft trigger re-checks the approval.
+    cur = conn.execute(
+        """
+        INSERT INTO outbox (approval_id, draft_id, recipient, subject, body, idempotency_key,
+                            created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (approval_id, draft_id, recipient, subject, body, f"approval:{approval_id}", now),
+    )
+    return int(cur.lastrowid)  # type: ignore[arg-type]
+
+
+def get_outbox_for_approval(conn: sqlite3.Connection, approval_id: int) -> sqlite3.Row | None:
+    return conn.execute("SELECT * FROM outbox WHERE approval_id = ?", (approval_id,)).fetchone()

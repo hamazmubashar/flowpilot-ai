@@ -168,3 +168,33 @@ def test_repr_includes_llm_config_without_key() -> None:
     s = Settings(api_key=KEY, db_path=Path("x.db"), backup_dir=Path("b"))
     assert "llm=LLMConfig(mode='off'" in repr(s)
     assert KEY not in repr(s)
+
+
+# --- reviewer key (M4) ------------------------------------------------------------------------
+
+REVIEWER = "r" * 32
+
+
+def test_reviewer_key_is_optional_and_loaded_when_set() -> None:
+    assert load_settings({"FLOWPILOT_API_KEY": KEY}, env_file=None).reviewer_key is None
+    assert (
+        load_settings(
+            {"FLOWPILOT_API_KEY": KEY, "FLOWPILOT_REVIEWER_KEY": ""}, env_file=None
+        ).reviewer_key
+        is None
+    )
+    s = load_settings({"FLOWPILOT_API_KEY": KEY, "FLOWPILOT_REVIEWER_KEY": REVIEWER}, env_file=None)
+    assert s.reviewer_key == REVIEWER
+    assert REVIEWER not in repr(s)
+
+
+@pytest.mark.parametrize(
+    ("reviewer_key", "message"),
+    [("r" * 31, "at least 32"), (KEY, "must differ")],
+    ids=["too-short", "same-as-api-key"],
+)
+def test_weak_reviewer_key_fails_closed(reviewer_key: str, message: str) -> None:
+    with pytest.raises(SettingsError, match=message):
+        load_settings(
+            {"FLOWPILOT_API_KEY": KEY, "FLOWPILOT_REVIEWER_KEY": reviewer_key}, env_file=None
+        )

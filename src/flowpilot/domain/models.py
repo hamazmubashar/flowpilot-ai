@@ -174,6 +174,20 @@ class DraftGenerator(StrEnum):
     HUMAN_EDIT = "human_edit"
 
 
+class ReviewDecision(StrEnum):
+    APPROVED = "approved"
+    REJECTED = "rejected"
+
+
+class DraftDecisionIn(BaseModel):
+    """A human reviewer's decision on one exact draft version (M4)."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    decision: ReviewDecision
+    reason: Annotated[str, StringConstraints(min_length=1, max_length=500)] | None = None
+
+
 class Assessment(BaseModel):
     """Advisory qualification. Never feeds scoring, routing, or approval."""
 
