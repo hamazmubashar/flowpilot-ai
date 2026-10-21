@@ -70,15 +70,17 @@ All endpoints except `/health` require `X-API-Key`. Optional headers: `Idempoten
 | GET | `/leads/{id}/drafts` | All draft versions, oldest first |
 | POST | `/leads/{id}/drafts/{version}/approval` | Human review (M4): body `{"decision": "approved"\|"rejected", "reason"?}` → `201` |
 
-**Human review (M4).** The approval endpoint also requires `X-Reviewer-Key` (a second key,
-`FLOWPILOT_REVIEWER_KEY`, never given to n8n) and `X-Actor` (the reviewer's name, stored as
-`decided_by` with `actor_type = 'human'`). Without the reviewer key set it returns `503
-review_disabled`; a missing or wrong reviewer key returns `403 reviewer_required`. Only the latest
-draft version of a `drafted`/`awaiting_approval` lead can be decided, once (`409
-draft_superseded` / `draft_already_decided` / `lead_not_reviewable`). Approval moves the lead to
-`approved` and enqueues one **simulated** outbox entry (`pending`) with that draft's exact
-content; rejection moves it to `rejected`. Nothing is ever sent. `Idempotency-Key` makes retries
-safe.
+**Human review (M4).** The approval endpoint also requires `X-Reviewer-Token`: the reviewer's
+own token from `flowpilot-admin reviewer add <name>` (shown once; only its SHA-256 is stored;
+never given to n8n). The reviewer's identity comes from the database and is stored as
+`decided_by` + `reviewer_id` with `actor_type = 'human'`; `X-Actor` is ignored for decisions. A
+missing, unknown or revoked token returns `403 reviewer_required`; a database trigger also
+refuses any approval without an active reviewer. Only the latest draft version of a
+`drafted`/`awaiting_approval` lead can be decided, once (`409 draft_superseded` /
+`draft_already_decided` / `lead_not_reviewable`). Approval moves the lead to `approved` and
+enqueues one **simulated** outbox entry (`pending`) with that draft's exact content; rejection
+moves it to `rejected`. Nothing is ever sent. `Idempotency-Key` makes retries safe and is scoped
+to the reviewer.
 
 ```bash
 source .env
@@ -102,6 +104,7 @@ Swagger UI is disabled by default because it loads assets from a public CDN; set
 | `flowpilot-admin restore FILE --yes` | Verify backup, save current DB, restore |
 | `flowpilot-admin verify` | Integrity, foreign keys, migration checksums |
 | `flowpilot-admin gen-key` | Generate an API key |
+| `flowpilot-admin reviewer add NAME` / `list` / `revoke NAME` | Manage human reviewers; `add` prints the token once (M4.1) |
 | `flowpilot-admin llm-check` | Ollama reachable on loopback + model installed (`/api/tags` only; no inference, no download) |
 
 Recovery procedures: [docs/runbook.md](docs/runbook.md). Scoring rules:
@@ -254,12 +257,14 @@ Design and evidence: [docs/adr/0003-n8n-orchestration.md](docs/adr/0003-n8n-orch
 
 ## Known limitations (M1–M3)
 
-- **One shared API key, plus one shared reviewer key.** All clients use the same
-  `FLOWPILOT_API_KEY`; review decisions additionally need `FLOWPILOT_REVIEWER_KEY`. There are no
-  per-user keys or scopes.
+- **One shared API key.** All clients use the same `FLOWPILOT_API_KEY`; there are no per-client
+  keys or scopes. Review decisions additionally need a per-reviewer token.
 - **`X-Actor` is self-declared.** The audit actor label is supplied by the caller and trusted only
-  because the caller holds the API key. For review decisions it names the reviewer, trusted only
-  because the caller also holds the reviewer key; anyone with that key can decide under any name.
+  because the caller holds the API key. Review decisions do not use it: they are attributed to
+  the reviewer whose token was presented.
+- **Reviewer tokens are bearer tokens.** No password, MFA or expiry: whoever holds a reviewer's
+  token acts as that reviewer until `flowpilot-admin reviewer revoke`. They travel over loopback
+  HTTP only.
 - **SQLite supports only one writer process.** FastAPI is the sole writer; running multiple API
   worker processes is not supported.
 - **No rate limiting.** Requests are not throttled.

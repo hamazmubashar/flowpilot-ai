@@ -1,8 +1,9 @@
 """Human review of drafts (M4): approve or reject one exact draft version.
 
-The caller is authenticated as a human reviewer by the API layer (a separate reviewer key that
-automated clients such as n8n never hold). Everything here runs in one `BEGIN IMMEDIATE`
-transaction, so the checks and writes cannot interleave with another decision or a new draft.
+The caller is authenticated by the API layer as an individual reviewer (a personal reviewer
+token that automated clients such as n8n never hold). Everything here runs in one `BEGIN
+IMMEDIATE` transaction, so the checks and writes cannot interleave with another decision, a new
+draft, or the reviewer's revocation.
 Approval enqueues exactly one simulated outbox row; nothing is ever sent.
 """
 
@@ -17,6 +18,7 @@ from flowpilot.db.connection import transaction
 from flowpilot.domain.models import DraftDecisionIn, LeadStatus, ReviewDecision
 from flowpilot.services.assist import LeadNotFound
 from flowpilot.services.intake import Clock, IdempotencyKeyReused, iso, utc_now
+from flowpilot.services.reviewers import ReviewerIdentity
 
 REVIEW_SCOPE = "POST /leads/{id}/drafts/{version}/approval"
 REVIEWABLE = frozenset({LeadStatus.DRAFTED, LeadStatus.AWAITING_APPROVAL})
@@ -24,6 +26,10 @@ DECISION_STATUS = {
     ReviewDecision.APPROVED: LeadStatus.APPROVED,
     ReviewDecision.REJECTED: LeadStatus.REJECTED,
 }
+
+
+class ReviewerNotActive(Exception):
+    """The authenticated reviewer was revoked before the decision was written."""
 
 
 class DraftNotFound(Exception):
@@ -59,9 +65,13 @@ class ReviewResult:
     replayed: bool
 
 
-def _request_hash(lead_id: int, version: int, decision: DraftDecisionIn) -> str:
+def _request_hash(
+    reviewer: ReviewerIdentity, lead_id: int, version: int, decision: DraftDecisionIn
+) -> str:
+    # The reviewer is part of the request: another reviewer reusing a key is a different request.
     digest = hashlib.sha256()
-    for part in (REVIEW_SCOPE, str(lead_id), str(version), decision.decision.value):
+    parts = (REVIEW_SCOPE, str(reviewer.id), str(lead_id), str(version), decision.decision.value)
+    for part in parts:
         digest.update(part.encode("utf-8"))
         digest.update(b"\x00")
     digest.update((decision.reason or "").encode("utf-8"))
@@ -74,14 +84,16 @@ def decide_draft(
     version: int,
     decision: DraftDecisionIn,
     *,
-    reviewer: str,
+    reviewer: ReviewerIdentity,
     clock: Clock = utc_now,
     idempotency_key: str | None = None,
     request_id: str | None = None,
 ) -> ReviewResult:
-    request_hash = _request_hash(lead_id, version, decision)
+    request_hash = _request_hash(reviewer, lead_id, version, decision)
     now = iso(clock())
     with transaction(conn):
+        if repo.get_active_reviewer(conn, reviewer.id) is None:
+            raise ReviewerNotActive
         if idempotency_key is not None:
             prior = repo.get_idempotency(conn, REVIEW_SCOPE, idempotency_key)
             if prior is not None:
@@ -109,7 +121,8 @@ def decide_draft(
             conn,
             draft_id=draft["id"],
             decision=decision.decision.value,
-            decided_by=reviewer,
+            reviewer_id=reviewer.id,
+            decided_by=reviewer.name,
             reason=decision.reason,
             now=now,
         )
@@ -129,7 +142,7 @@ def decide_draft(
         repo.insert_audit(
             conn,
             occurred_at=now,
-            actor=reviewer,
+            actor=reviewer.name,
             action=f"lead.{decision.decision.value}",
             entity_type="lead",
             entity_id=lead_id,
@@ -139,6 +152,7 @@ def decide_draft(
                 "draft_id": draft["id"],
                 "version": version,
                 "approval_id": approval_id,
+                "reviewer_id": reviewer.id,
                 "reason": decision.reason,
                 "outbox_id": outbox_id,
             },
@@ -148,7 +162,7 @@ def decide_draft(
             repo.insert_audit(
                 conn,
                 occurred_at=now,
-                actor=reviewer,
+                actor=reviewer.name,
                 action="outbox.enqueued",
                 entity_type="outbox",
                 entity_id=outbox_id,

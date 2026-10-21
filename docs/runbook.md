@@ -77,14 +77,22 @@ An applied migration file was edited. Applied migrations are immutable: revert t
 3. Update clients (n8n credential from M3 onward).
 4. Review `audit_log` for unexpected actors since the suspected leak.
 
-## Scenario: enable, rotate, or revoke the reviewer key (M4)
+## Scenario: add, rotate, or revoke a reviewer (M4.1)
 
-Human approval/rejection needs `FLOWPILOT_REVIEWER_KEY` (sent as `X-Reviewer-Key`). Enable or
-rotate: `uv run flowpilot-admin gen-key`, set it in `.env` (it must differ from
-`FLOWPILOT_API_KEY`), restart the API. Revoke: empty the value and restart; review endpoints then
-return `503 review_disabled`. Never add it to n8n or any automated client. After a suspected
-leak, check `approvals` and `lead.approved`/`lead.rejected` audit rows since then; decisions are
-final, so a wrongly approved draft's `pending` simulated outbox entry must be handled by hand.
+Each human reviewer has their own token; only its SHA-256 is stored.
+
+```bash
+uv run flowpilot-admin reviewer add avery     # prints the token ONCE; hand it to avery only
+uv run flowpilot-admin reviewer list          # names and status, never tokens
+uv run flowpilot-admin reviewer revoke avery  # their token stops working on the next request
+```
+
+A lost token cannot be recovered; revoke it and add the reviewer under a new name (names are
+permanent and revocation cannot be undone, so history stays attributable). Never put a
+reviewer token in n8n, `.env`, logs or tickets. After a suspected leak, revoke, then check
+`approvals` and `lead.approved`/`lead.rejected` audit rows by that reviewer since the leak;
+decisions are final, so a wrongly approved draft's `pending` simulated outbox entry must be
+handled by hand.
 
 ## Scenario: rebuild a clean demo database
 

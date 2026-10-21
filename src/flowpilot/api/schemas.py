@@ -151,6 +151,7 @@ class ApprovalOut(BaseModel):
     version: int
     decision: ReviewDecision
     actor_type: Literal["human"]
+    reviewer_id: int | None
     decided_by: str
     reason: str | None
     decided_at: str

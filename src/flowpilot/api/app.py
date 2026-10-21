@@ -22,6 +22,7 @@ from flowpilot.services.review import (
     DraftNotFound,
     DraftSuperseded,
     LeadNotReviewable,
+    ReviewerNotActive,
 )
 from flowpilot.settings import LLMConfig, Settings
 
@@ -129,6 +130,18 @@ def create_app(
                 "detail": {
                     "code": "lead_not_draftable",
                     "message": f"lead status {exc.status!r} does not allow drafting",
+                }
+            },
+        )
+
+    @app.exception_handler(ReviewerNotActive)
+    async def reviewer_not_active(_: Request, exc: ReviewerNotActive) -> JSONResponse:
+        return JSONResponse(
+            status_code=403,
+            content={
+                "detail": {
+                    "code": "reviewer_required",
+                    "message": "missing or invalid X-Reviewer-Token",
                 }
             },
         )

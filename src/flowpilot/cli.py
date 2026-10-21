@@ -1,5 +1,5 @@
 """`flowpilot-admin`: migrations, seeding, backup/restore, integrity checks, key generation,
-and a no-inference Ollama readiness check."""
+reviewer management, and a no-inference Ollama readiness check."""
 
 from __future__ import annotations
 
@@ -11,11 +11,13 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
+from flowpilot.db import repository as repo
 from flowpilot.db.connection import connect
 from flowpilot.db.migrate import MigrationError, current_version, migrate, pending
 from flowpilot.domain.models import LeadIn
 from flowpilot.llm.client import LLMError, OllamaClient
 from flowpilot.services.intake import submit_lead
+from flowpilot.services.reviewers import ReviewerError, add_reviewer, revoke_reviewer
 from flowpilot.settings import SettingsError, load_llm_config, load_storage_paths
 from flowpilot.synthetic import DEFAULT_COUNT, DEFAULT_SEED, generate_leads
 
@@ -180,6 +182,56 @@ def cmd_verify(db: Path, _: argparse.Namespace) -> int:
     return 0
 
 
+def _open_migrated(db: Path) -> sqlite3.Connection:
+    _require_db(db)
+    conn = connect(db)
+    if pending(conn):
+        conn.close()
+        raise CommandError("pending migrations; run `flowpilot-admin migrate` first")
+    return conn
+
+
+def cmd_reviewer_add(db: Path, args: argparse.Namespace) -> int:
+    conn = _open_migrated(db)
+    try:
+        reviewer, token = add_reviewer(conn, args.name)
+    except ReviewerError as exc:
+        raise CommandError(str(exc)) from None
+    finally:
+        conn.close()
+    # The only place a reviewer token is ever shown; only its SHA-256 is stored.
+    print(f"reviewer {reviewer.name!r} added (id {reviewer.id}).")
+    print("Token (shown once; give it only to this reviewer, never to n8n or any automation):")
+    print(token)
+    return 0
+
+
+def cmd_reviewer_list(db: Path, _: argparse.Namespace) -> int:
+    conn = _open_migrated(db)
+    try:
+        rows = repo.list_reviewers(conn)
+    finally:
+        conn.close()
+    if not rows:
+        print("no reviewers")
+    for row in rows:
+        status = "active" if row["revoked_at"] is None else f"revoked {row['revoked_at']}"
+        print(f"{row['id']}\t{row['name']}\t{status}\tadded {row['created_at']}")
+    return 0
+
+
+def cmd_reviewer_revoke(db: Path, args: argparse.Namespace) -> int:
+    conn = _open_migrated(db)
+    try:
+        revoke_reviewer(conn, args.name)
+    except ReviewerError as exc:
+        raise CommandError(str(exc)) from None
+    finally:
+        conn.close()
+    print(f"reviewer {args.name!r} revoked; their token no longer works.")
+    return 0
+
+
 def cmd_gen_key(_: Path, __: argparse.Namespace) -> int:
     print(secrets.token_urlsafe(32))
     return 0
@@ -236,6 +288,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("verify", help="integrity + migration checks").set_defaults(func=cmd_verify)
     sub.add_parser("gen-key", help="print a new random API key").set_defaults(func=cmd_gen_key)
+
+    reviewer = sub.add_parser("reviewer", help="manage individual human reviewers (M4.1)")
+    reviewer_sub = reviewer.add_subparsers(dest="reviewer_command", required=True)
+    add = reviewer_sub.add_parser("add", help="create a reviewer and print their token once")
+    add.add_argument("name")
+    add.set_defaults(func=cmd_reviewer_add)
+    reviewer_sub.add_parser("list", help="list reviewers (never tokens)").set_defaults(
+        func=cmd_reviewer_list
+    )
+    revoke = reviewer_sub.add_parser("revoke", help="revoke a reviewer's token immediately")
+    revoke.add_argument("name")
+    revoke.set_defaults(func=cmd_reviewer_revoke)
     sub.add_parser(
         "llm-check", help="check Ollama reachability and model presence (no inference)"
     ).set_defaults(func=cmd_llm_check)

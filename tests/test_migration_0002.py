@@ -26,8 +26,8 @@ def test_upgrade_from_m1_preserves_data(tmp_path: Path, lead_payload: dict) -> N
         scores_before = [tuple(r) for r in conn.execute("SELECT * FROM lead_scores")]
 
         applied = migrate(conn)
-        assert [m.label for m in applied] == ["0002_llm"]
-        assert current_version(conn) == 2
+        assert [m.label for m in applied] == ["0002_llm", "0003_reviewers"]
+        assert current_version(conn) == 3
         assert [tuple(r) for r in conn.execute("SELECT * FROM lead_scores")] == scores_before
         assert conn.execute("SELECT status FROM leads WHERE id = ?", (lead_id,)).fetchone()[0] == (
             "scored"
