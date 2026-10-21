@@ -8,7 +8,7 @@ locally, and every outbound message requires human approval.
 > audit, and recovery, plus advisory LLM qualification and reply drafting via a local Ollama model
 > with deterministic fallback. LLM calls are **off by default**. M3 in progress: a hardened local
 > n8n runtime (Docker) is configured, and one workflow (`flowpilot-prepare-next-lead`) is exported
-> and statically validated but **has not been executed yet**.
+> and statically validated, and has passed **one manual run against a scratch database**.
 
 ## What M1 does
 
@@ -186,7 +186,7 @@ Live checks against a real model are opt-in and never part of the default suite:
 workflow orchestration. n8n only calls the FastAPI endpoints above; it never sends messages and
 never approves anything.
 
-### Workflow: `flowpilot-prepare-next-lead` (M3-P2, not yet executed)
+### Workflow: `flowpilot-prepare-next-lead` (M3-P2)
 
 [`n8n/workflows/flowpilot-prepare-next-lead.json`](n8n/workflows/flowpilot-prepare-next-lead.json),
 manual trigger, inactive:
@@ -207,7 +207,8 @@ Manual trigger → GET /leads?status=scored&limit=1 → queue empty? ── yes 
 - `tests/test_n8n_workflows.py` checks every export statically (node allowlist, fixed URL,
   approved method/path pairs, idempotency keys, stored credential, inactive, no pinned data, every
   node reachable from the trigger). `tests/test_workflow_contract.py` replays the same call
-  sequence against FastAPI. Neither runs the workflow inside n8n.
+  sequence against FastAPI. Neither runs the workflow inside n8n; one manual run against a scratch
+  database (LLM off) is recorded in ADR 0003 P2.
 
 ```
 host 127.0.0.1:5678 ─► ui-gateway ─────────────┐
@@ -292,9 +293,9 @@ Design and evidence: [docs/adr/0003-n8n-orchestration.md](docs/adr/0003-n8n-orch
 - **Browser login to the n8n UI was verified with curl, not a real browser.** The session cookie
   is `Secure; HttpOnly; SameSite=Lax`, which browsers accept on `http://localhost`.
 - **Losing `N8N_ENCRYPTION_KEY` makes stored n8n credentials unrecoverable.**
-- **The n8n workflow has not been executed.** Its export is validated statically and its API call
-  sequence is replayed in tests, but no run inside n8n has been performed. Expression evaluation,
-  the If/Set node behaviour and the 200 s HTTP timeouts are untested at runtime.
+- **The n8n workflow has been run only once.** One manual run against a scratch database with the
+  LLM off succeeded. The `ollama` path, reruns, the empty-queue branch, runtime error handling and
+  the 200 s HTTP timeouts are untested inside n8n.
 - **Prompt examples can be copied.** The draft prompt includes a worked example (contact "Alex",
   "reporting needs"). A model may copy its name or wording into a real draft; no guard checks that
   the greeting matches the lead's contact name, so human review must catch it.
