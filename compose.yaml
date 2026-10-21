@@ -1,0 +1,121 @@
+{
+  "name": "flowpilot",
+  "services": {
+    "n8n": {
+      "image": "n8nio/n8n@sha256:c72fa9f1bd9b59626deeb284824c0495625c3f6d894d395d27e241bf192d9900",
+      "restart": "unless-stopped",
+      "networks": {
+        "n8n_internal": {}
+      },
+      "environment": {
+        "N8N_ENCRYPTION_KEY": "${N8N_ENCRYPTION_KEY:?Set N8N_ENCRYPTION_KEY in .env (see .env.example)}",
+        "N8N_HOST": "localhost",
+        "N8N_PORT": "5678",
+        "N8N_PROTOCOL": "http",
+        "N8N_EDITOR_BASE_URL": "http://localhost:5678",
+        "WEBHOOK_URL": "http://localhost:5678/",
+        "N8N_SECURE_COOKIE": "true",
+        "GENERIC_TIMEZONE": "UTC",
+        "N8N_DIAGNOSTICS_ENABLED": "false",
+        "N8N_VERSION_NOTIFICATIONS_ENABLED": "false",
+        "N8N_TEMPLATES_ENABLED": "false",
+        "N8N_PERSONALIZATION_ENABLED": "false",
+        "N8N_HIRING_BANNER_ENABLED": "false",
+        "N8N_PUBLIC_API_DISABLED": "true",
+        "N8N_PUBLIC_API_SWAGGERUI_DISABLED": "true",
+        "N8N_DISABLED_MODULES": "mcp-registry",
+        "N8N_COMMUNITY_PACKAGES_ENABLED": "false",
+        "N8N_AI_ENABLED": "false",
+        "N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS": "true",
+        "EXECUTIONS_DATA_PRUNE": "true",
+        "EXECUTIONS_DATA_MAX_AGE": "168",
+        "N8N_CONCURRENCY_PRODUCTION_LIMIT": "1",
+        "NODES_INCLUDE": "[\"n8n-nodes-base.webhook\",\"n8n-nodes-base.httpRequest\",\"n8n-nodes-base.if\",\"n8n-nodes-base.respondToWebhook\",\"n8n-nodes-base.scheduleTrigger\",\"n8n-nodes-base.errorTrigger\",\"n8n-nodes-base.noOp\",\"n8n-nodes-base.set\",\"n8n-nodes-base.manualTrigger\"]"
+      },
+      "volumes": [
+        "${FLOWPILOT_N8N_DATA_DIR:-./var/n8n}:/home/node/.n8n"
+      ],
+      "cap_drop": ["ALL"],
+      "security_opt": ["no-new-privileges:true"],
+      "mem_limit": "1g",
+      "pids_limit": 256,
+      "healthcheck": {
+        "test": ["CMD", "node", "-e", "fetch('http://127.0.0.1:5678/healthz').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"],
+        "interval": "10s",
+        "timeout": "5s",
+        "retries": 12,
+        "start_period": "20s"
+      },
+      "depends_on": {
+        "api-gateway": {"condition": "service_healthy"}
+      }
+    },
+    "api-gateway": {
+      "image": "n8nio/n8n@sha256:c72fa9f1bd9b59626deeb284824c0495625c3f6d894d395d27e241bf192d9900",
+      "restart": "unless-stopped",
+      "user": "node",
+      "entrypoint": ["node", "/gateway/tcp-gateway.js"],
+      "environment": {
+        "GATEWAY_LISTEN_PORT": "8000",
+        "GATEWAY_UPSTREAM_HOST": "192.168.65.254",
+        "GATEWAY_UPSTREAM_PORT": "8000"
+      },
+      "volumes": [
+        "./n8n/gateway/tcp-gateway.js:/gateway/tcp-gateway.js:ro"
+      ],
+      "networks": {
+        "n8n_internal": {"aliases": ["host.docker.internal"]},
+        "gateway_egress": {}
+      },
+      "read_only": true,
+      "cap_drop": ["ALL"],
+      "security_opt": ["no-new-privileges:true"],
+      "mem_limit": "64m",
+      "pids_limit": 32,
+      "healthcheck": {
+        "test": ["CMD", "node", "-e", "require('net').connect(8000,'127.0.0.1').on('connect',()=>process.exit(0)).on('error',()=>process.exit(1))"],
+        "interval": "10s",
+        "timeout": "3s",
+        "retries": 6
+      }
+    },
+    "ui-gateway": {
+      "image": "n8nio/n8n@sha256:c72fa9f1bd9b59626deeb284824c0495625c3f6d894d395d27e241bf192d9900",
+      "restart": "unless-stopped",
+      "user": "node",
+      "entrypoint": ["node", "/gateway/tcp-gateway.js"],
+      "environment": {
+        "GATEWAY_LISTEN_PORT": "5678",
+        "GATEWAY_UPSTREAM_HOST": "n8n",
+        "GATEWAY_UPSTREAM_PORT": "5678"
+      },
+      "volumes": [
+        "./n8n/gateway/tcp-gateway.js:/gateway/tcp-gateway.js:ro"
+      ],
+      "networks": {
+        "n8n_internal": {},
+        "ui_edge": {}
+      },
+      "ports": ["127.0.0.1:5678:5678"],
+      "read_only": true,
+      "cap_drop": ["ALL"],
+      "security_opt": ["no-new-privileges:true"],
+      "mem_limit": "64m",
+      "pids_limit": 32,
+      "healthcheck": {
+        "test": ["CMD", "node", "-e", "require('net').connect(5678,'127.0.0.1').on('connect',()=>process.exit(0)).on('error',()=>process.exit(1))"],
+        "interval": "10s",
+        "timeout": "3s",
+        "retries": 6
+      },
+      "depends_on": {
+        "n8n": {"condition": "service_healthy"}
+      }
+    }
+  },
+  "networks": {
+    "n8n_internal": {"internal": true, "enable_ipv6": false},
+    "gateway_egress": {"enable_ipv6": false},
+    "ui_edge": {"enable_ipv6": false}
+  }
+}

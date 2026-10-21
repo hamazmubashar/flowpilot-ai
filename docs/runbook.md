@@ -113,3 +113,71 @@ human approval (M4) before anything is sent.
 
 Set `FLOWPILOT_LLM_MODE=off` in `.env` and restart the API. All qualification and drafting
 requests then use deterministic fallbacks; nothing else changes.
+
+## n8n runtime (M3)
+
+`compose.yaml` runs n8n plus two fixed-destination gateways. Design: ADR 0003. Workflows are
+added in later M3 phases; this section covers the runtime only.
+
+### First start
+
+1. In `.env` set `N8N_ENCRYPTION_KEY` (`openssl rand -hex 32`). **Store a copy outside the repo.**
+   Compose refuses to start without it.
+2. Start FastAPI on the host: `uv run flowpilot-api` (stays bound to `127.0.0.1:8000`).
+3. `docker compose up -d`, then `docker compose ps`: all three services should be `healthy`.
+4. Open **`http://localhost:5678`** (not `127.0.0.1`; the session cookie is scoped to the hostname)
+   and create the local owner account with a strong password.
+
+### Stop, start, inspect
+
+```bash
+docker compose down              # stops containers and removes the compose networks; data kept
+docker compose up -d             # start again
+docker compose logs -f n8n       # n8n logs
+docker compose logs api-gateway  # every connection is logged with its (fixed) destination
+```
+
+`docker compose down -v` is not needed (no named volumes). Never delete `var/n8n` unless you
+intend to lose all n8n state.
+
+### Backup
+
+Stop n8n first (`docker compose stop n8n`) so its SQLite database is consistent, then copy
+`var/n8n/` **together with** `N8N_ENCRYPTION_KEY`. A backup without the key cannot decrypt the
+stored credentials.
+
+### Scenario: `N8N_ENCRYPTION_KEY` lost or changed
+
+There is no recovery: every credential stored in n8n (e.g. the FlowPilot API key credential) is
+unreadable. Workflows themselves survive. Fix: restore the original key from your backup. If it
+is truly gone, stop n8n, move `var/n8n` aside, set a new key, start fresh, and re-create the
+credentials (workflows are version-controlled in the repo from later phases).
+
+### Scenario: rotate the FlowPilot API key
+
+Follow "API key leaked or rotated" above, then update the n8n credential that holds `X-API-Key`.
+
+### Verifying the egress boundary
+
+The boundary is the Docker network: n8n is attached only to the `internal` network and can reach
+FastAPI solely through `api-gateway`. Re-verify after any Docker Desktop upgrade or compose
+change:
+
+```bash
+docker compose exec n8n node -e "console.log(require('fs').readFileSync('/proc/net/route','utf8'))"
+#   no 00000000 destination line => no default route
+docker compose exec n8n node -e "fetch('http://host.docker.internal:8000/health').then(r=>console.log(r.status))"
+#   200 (FastAPI must be running)
+docker compose exec n8n node -e "fetch('https://example.com').then(r=>console.log('REACHED',r.status),e=>console.log('blocked',e.cause?.code||e.name))"
+#   blocked
+lsof -nP -iTCP:5678 -sTCP:LISTEN      # only 127.0.0.1:5678
+```
+
+If `host.docker.internal:8000/health` fails while FastAPI is up, Docker Desktop's host address may
+have changed from `192.168.65.254`. Do **not** widen the network; re-verify the host address and
+update `GATEWAY_UPSTREAM_HOST` deliberately (and its static test).
+
+### Scenario: n8n UI login loops or the session is lost
+
+Use `http://localhost:5678`. The cookie is `Secure; HttpOnly; SameSite=Lax` and bound to
+`localhost`; using `127.0.0.1` gives a separate, unauthenticated cookie scope.
