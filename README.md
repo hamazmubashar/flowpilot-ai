@@ -9,6 +9,7 @@ locally, and every outbound message requires human approval.
 > with deterministic fallback. LLM calls are **off by default**. M3 in progress: a hardened local
 > n8n runtime (Docker) is configured, and one workflow (`flowpilot-prepare-next-lead`) is exported
 > and statically validated, and has passed **one manual run against a scratch database**.
+> M4 in progress: human approval/rejection of an exact draft version, with a simulated-only outbox.
 
 ## What M1 does
 
@@ -67,6 +68,17 @@ All endpoints except `/health` require `X-API-Key`. Optional headers: `Idempoten
 | GET | `/leads/{id}/qualification` | Latest assessment (`404 assessment_not_found` if none) |
 | POST | `/leads/{id}/drafts` | New reply draft version (LLM or template) → `201`; `409` unless `scored`/`drafted` |
 | GET | `/leads/{id}/drafts` | All draft versions, oldest first |
+| POST | `/leads/{id}/drafts/{version}/approval` | Human review (M4): body `{"decision": "approved"\|"rejected", "reason"?}` → `201` |
+
+**Human review (M4).** The approval endpoint also requires `X-Reviewer-Key` (a second key,
+`FLOWPILOT_REVIEWER_KEY`, never given to n8n) and `X-Actor` (the reviewer's name, stored as
+`decided_by` with `actor_type = 'human'`). Without the reviewer key set it returns `503
+review_disabled`; a missing or wrong reviewer key returns `403 reviewer_required`. Only the latest
+draft version of a `drafted`/`awaiting_approval` lead can be decided, once (`409
+draft_superseded` / `draft_already_decided` / `lead_not_reviewable`). Approval moves the lead to
+`approved` and enqueues one **simulated** outbox entry (`pending`) with that draft's exact
+content; rejection moves it to `rejected`. Nothing is ever sent. `Idempotency-Key` makes retries
+safe.
 
 ```bash
 source .env
@@ -242,16 +254,18 @@ Design and evidence: [docs/adr/0003-n8n-orchestration.md](docs/adr/0003-n8n-orch
 
 ## Known limitations (M1–M3)
 
-- **One shared API key.** All clients use the same `FLOWPILOT_API_KEY`; there are no per-client
-  keys or scopes.
+- **One shared API key, plus one shared reviewer key.** All clients use the same
+  `FLOWPILOT_API_KEY`; review decisions additionally need `FLOWPILOT_REVIEWER_KEY`. There are no
+  per-user keys or scopes.
 - **`X-Actor` is self-declared.** The audit actor label is supplied by the caller and trusted only
-  because the caller holds the API key. Per-user identity arrives with the M4 approval flow.
+  because the caller holds the API key. For review decisions it names the reviewer, trusted only
+  because the caller also holds the reviewer key; anyone with that key can decide under any name.
 - **SQLite supports only one writer process.** FastAPI is the sole writer; running multiple API
   worker processes is not supported.
 - **No rate limiting.** Requests are not throttled.
 - **Plain HTTP.** No TLS, because the service is restricted to loopback addresses.
-- **Draft, approval, and outbox tables exist, but their API endpoints are deferred until M4.**
-  Their schema guardrails are in place and tested; nothing writes to them yet.
+- **The outbox is enqueue-only.** Approval writes a `pending` simulated entry; nothing marks it
+  sent and there is no endpoint to list it. A rejected lead cannot be redrafted.
 - **Scoring and routing remain rules-only.** LLM output is advisory and is never fed back into
   them.
 - **The injection pre-screen is heuristic.** It will miss novel phrasings, paraphrases, other

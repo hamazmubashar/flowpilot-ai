@@ -77,6 +77,15 @@ An applied migration file was edited. Applied migrations are immutable: revert t
 3. Update clients (n8n credential from M3 onward).
 4. Review `audit_log` for unexpected actors since the suspected leak.
 
+## Scenario: enable, rotate, or revoke the reviewer key (M4)
+
+Human approval/rejection needs `FLOWPILOT_REVIEWER_KEY` (sent as `X-Reviewer-Key`). Enable or
+rotate: `uv run flowpilot-admin gen-key`, set it in `.env` (it must differ from
+`FLOWPILOT_API_KEY`), restart the API. Revoke: empty the value and restart; review endpoints then
+return `503 review_disabled`. Never add it to n8n or any automated client. After a suspected
+leak, check `approvals` and `lead.approved`/`lead.rejected` audit rows since then; decisions are
+final, so a wrongly approved draft's `pending` simulated outbox entry must be handled by hand.
+
 ## Scenario: rebuild a clean demo database
 
 ```bash
