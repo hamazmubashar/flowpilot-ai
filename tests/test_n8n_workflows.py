@@ -2,20 +2,24 @@
 
 Every `n8n/workflows/*.json` export must use only the Compose node allowlist, call FastAPI only
 through the api-gateway on approved lead endpoints, send an `Idempotency-Key` on every POST,
-authenticate through a stored credential, and never touch approvals or the outbox. Exports must
-be committed inactive and without pinned execution data.
+authenticate through a stored credential, and never touch approvals or the outbox. Every node must
+be reachable from a trigger. Exports must be committed inactive and without pinned execution data.
 
-The rules are proven against inline fixtures below; the export check skips until the first
-workflow is exported (M3-P2 Step 3).
+The rules are proven against inline fixtures below and applied to every committed export.
 
 Verified from this repository: node type IDs (compose `NODES_INCLUDE`) and the api-gateway base
-URL (compose alias, ADR 0003 P1 evidence). Assumed, not verifiable offline: the HTTP Request
-export field names (`method` omitted when GET, `authentication`, `genericAuthType`,
-`sendHeaders`, `headerParameters`, `specifyHeaders`, `queryParameters`, `credentials`) and the
-workflow-level `active` and `pinData` keys. Confirm them against the first real export from the
-pinned n8n 2.44.4. A renamed URL, method, header or auth field fails the export test, but a
-renamed `active` or `pinData` key would go unnoticed. URL `{{ }}` expressions are checked only as
-literal templates (each must stay within one path segment); their runtime values are not evaluated.
+URL (compose alias, ADR 0003 P1 evidence). Verified against the real n8n 2.44.4 export of
+`flowpilot-prepare-next-lead`: the HTTP Request field names (`method` omitted when GET,
+`authentication`, `genericAuthType`, `sendHeaders`, `headerParameters`, `queryParameters`,
+`credentials`; `specifyHeaders` is omitted at its `keypair` default) and the workflow-level
+`active` and `pinData` keys, whose presence the export test also asserts. URL `{{ }}` expressions
+are checked only as literal templates (each must stay within one path segment); their runtime
+values are not evaluated.
+
+A credential reference must name an `httpHeaderAuth` credential. Its `id` may be null in an
+unbound import template: on save, n8n 2.44.4 (`replaceInvalidCredentials` in
+`dist/workflow-helpers.js`) binds a missing or unknown id to the single credential of that name and
+type in the project. A committed export must carry the bound id; the export test asserts it.
 """
 
 import copy
@@ -32,6 +36,9 @@ ALLOWED_NODES = frozenset(json.loads(COMPOSE["services"]["n8n"]["environment"]["
 WORKFLOW_FILES = sorted((ROOT / "n8n" / "workflows").glob("*.json"))
 
 HTTP_NODE = "n8n-nodes-base.httpRequest"
+TRIGGER_NODES = frozenset(
+    f"n8n-nodes-base.{t}" for t in ("manualTrigger", "scheduleTrigger", "errorTrigger", "webhook")
+)
 API_BASE = "http://host.docker.internal:8000/"
 EXPRESSION = re.compile(r"\{\{.*?\}\}")
 ALLOWED_CALLS = {
@@ -82,10 +89,12 @@ def _http_violations(node: dict) -> list[str]:
     if (set(headers) | queries) & SECRET_PARAMETER_NAMES:
         found.append(f"{name}: literal credential in headers or query; use a stored credential")
     credential = (node.get("credentials") or {}).get("httpHeaderAuth") or {}
+    credential_id = credential.get("id")
     if (
         params.get("authentication") != "genericCredentialType"
         or params.get("genericAuthType") != "httpHeaderAuth"
-        or not credential.get("id")
+        or not credential.get("name")
+        or not (credential_id is None or (isinstance(credential_id, str) and credential_id))
     ):
         found.append(f"{name}: must authenticate with an httpHeaderAuth credential reference")
     return found
@@ -106,7 +115,27 @@ def workflow_violations(workflow: dict) -> list[str]:
             found.append(f"{node.get('name', '?')}: node type {node_type!r} is not allowlisted")
         elif node_type == HTTP_NODE:
             found.extend(_http_violations(node))
+    found.extend(_reachability_violations(workflow))
     return found
+
+
+def _reachability_violations(workflow: dict) -> list[str]:
+    """Every node must run from a trigger; an orphaned chain (e.g. after an import that merged
+    into an existing canvas) would pass the per-node checks yet never execute."""
+    names = {node.get("name") for node in workflow["nodes"]}
+    reached = {n.get("name") for n in workflow["nodes"] if n.get("type") in TRIGGER_NODES}
+    if not reached:
+        return ["workflow has no trigger node"]
+    connections = workflow.get("connections") or {}
+    pending = list(reached)
+    while pending:
+        for output in (connections.get(pending.pop()) or {}).get("main") or []:
+            for link in output or []:
+                target = link.get("node")
+                if target in names and target not in reached:
+                    reached.add(target)
+                    pending.append(target)
+    return [f"{name}: not connected to a trigger" for name in sorted(names - reached)]
 
 
 # --- fixtures --------------------------------------------------------------------------------
@@ -128,6 +157,11 @@ def _http(name: str, url: str, method: str | None = None, key: str | None = None
         params["sendHeaders"] = True
         params["headerParameters"] = {"parameters": [{"name": "Idempotency-Key", "value": key}]}
     return {"name": name, "type": HTTP_NODE, "parameters": params, "credentials": CREDENTIAL}
+
+
+def _to(*targets: str) -> dict:
+    """n8n `connections` entry: one main output per target, in output order."""
+    return {"main": [[{"node": t, "type": "main", "index": 0}] for t in targets]}
 
 
 def valid_workflow() -> dict:
@@ -155,7 +189,14 @@ def valid_workflow() -> dict:
             ),
             {"name": "Done", "type": "n8n-nodes-base.noOp", "parameters": {}},
         ],
-        "connections": {},
+        "connections": {
+            "Start": _to("Next scored lead"),
+            "Next scored lead": _to("Queue empty?"),
+            "Queue empty?": _to("Done", "Pick lead"),
+            "Pick lead": _to("Qualify"),
+            "Qualify": _to("Draft"),
+            "Draft": _to("Done"),
+        },
     }
 
 
@@ -195,6 +236,16 @@ def _no_auth(wf: dict) -> None:
     _node(wf, "Qualify")["parameters"]["authentication"] = "none"
 
 
+def _custom_auth(wf: dict) -> None:
+    node = _node(wf, "Next scored lead")
+    node["parameters"]["genericAuthType"] = "httpCustomAuth"
+    node["credentials"] = {"httpCustomAuth": {"id": "cred-placeholder", "name": "Custom Auth"}}
+
+
+def _unnamed_credential(wf: dict) -> None:
+    _node(wf, "Draft")["credentials"] = {"httpHeaderAuth": {"id": None, "name": ""}}
+
+
 def _json_headers(wf: dict) -> None:
     _node(wf, "Draft")["parameters"]["specifyHeaders"] = "json"
 
@@ -223,6 +274,16 @@ def _no_nodes(wf: dict) -> None:
     wf["nodes"] = []
 
 
+def _orphaned_chain(wf: dict) -> None:
+    """The real failed import: a leftover trigger and GET, with the planned chain detached."""
+    wf["nodes"].append(_http("HTTP Request", f"{API_BASE}leads"))
+    wf["connections"]["Start"] = _to("HTTP Request")
+
+
+def _no_trigger(wf: dict) -> None:
+    wf["nodes"] = [n for n in wf["nodes"] if n["name"] != "Start"]
+
+
 INVALID = {
     "disallowed node type": (_code_node, "is not allowlisted"),
     "external host": (_set_url("Qualify", "https://example.com/leads/1/qualification"), "url must"),
@@ -247,9 +308,13 @@ INVALID = {
     "literal key in query": (_literal_query_key, "literal credential"),
     "missing credential reference": (_no_credential, "credential reference"),
     "authentication disabled": (_no_auth, "credential reference"),
+    "custom auth credential": (_custom_auth, "credential reference"),
+    "unnamed credential": (_unnamed_credential, "credential reference"),
     "active workflow": (_active, "inactive"),
     "pinned execution data": (_pinned, "pinData"),
     "no nodes": (_no_nodes, "no nodes"),
+    "chain detached from trigger": (_orphaned_chain, "Next scored lead: not connected"),
+    "no trigger": (_no_trigger, "no trigger node"),
 }
 
 
@@ -276,6 +341,7 @@ def test_harmless_approval_wording_is_allowed() -> None:
             "notes": "Approval and the simulated outbox are handled by humans in M4.",
         }
     )
+    workflow["connections"]["Done"] = _to("Awaiting human approval")
     _node(workflow, "Next scored lead")["parameters"]["url"] = (
         f"={API_BASE}leads?status=awaiting_approval&limit=1"
     )
@@ -284,6 +350,14 @@ def test_harmless_approval_wording_is_allowed() -> None:
     qualify["parameters"]["headerParameters"]["parameters"].append(
         {"name": "X-Actor", "value": "n8n:pre-approval-prep"}
     )
+    assert workflow_violations(workflow) == []
+
+
+def test_unbound_named_credential_is_allowed() -> None:
+    workflow = valid_workflow()
+    for node in workflow["nodes"]:
+        if node["type"] == HTTP_NODE:
+            node["credentials"] = {"httpHeaderAuth": {"id": None, "name": "FlowPilot API"}}
     assert workflow_violations(workflow) == []
 
 
@@ -296,8 +370,18 @@ def test_invalid_fixture_is_rejected(case: str) -> None:
     assert any(expected in v for v in violations), violations
 
 
-@pytest.mark.skipif(not WORKFLOW_FILES, reason="no n8n/workflows/*.json exports yet (M3-P2 Step 3)")
+def test_prepare_next_lead_export_is_committed() -> None:
+    assert ROOT / "n8n" / "workflows" / "flowpilot-prepare-next-lead.json" in WORKFLOW_FILES
+
+
 @pytest.mark.parametrize("path", WORKFLOW_FILES, ids=lambda p: p.name)
 def test_exported_workflow_is_valid(path: Path) -> None:
     workflow = json.loads(path.read_text(encoding="utf-8"))
+    assert {"active", "pinData"} <= workflow.keys()  # a renamed key would skip those checks
     assert workflow_violations(workflow) == []
+    unbound = [
+        n["name"]
+        for n in workflow["nodes"]
+        if n.get("type") == HTTP_NODE and not n["credentials"]["httpHeaderAuth"].get("id")
+    ]
+    assert unbound == [], f"committed exports must carry bound credential ids: {unbound}"
