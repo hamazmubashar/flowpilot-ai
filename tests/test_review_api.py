@@ -1,39 +1,50 @@
-"""M4 acceptance: human approval or rejection of one exact draft version.
+"""M4/M4.1 acceptance: an individually authenticated human reviewer approves or rejects one
+exact draft version.
 
-Approval requires the separate reviewer key on top of the API key, so an automated client that
-holds only the API key (n8n) cannot decide. Approval enqueues one simulated outbox row.
+Deciding requires the API key plus the reviewer's own token; the reviewer's identity comes from
+the database, never from a caller-declared header. An automated client that holds only the API
+key (n8n) cannot decide. Approval enqueues one simulated outbox row.
 """
 
-from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 
-from flowpilot.api.app import create_app
 from flowpilot.db.connection import connect
-from flowpilot.settings import Settings
+from flowpilot.domain.models import DraftDecisionIn
+from flowpilot.services.review import ReviewerNotActive, decide_draft
+from flowpilot.services.reviewers import add_reviewer, authenticate, revoke_reviewer
 from tests.conftest import API_KEY, FIXED_NOW
 
-REVIEWER_KEY = "test-reviewer-key-0123456789abcdefghij"
 REVIEWER = "reviewer:avery"
 
 
+def make_reviewer(db_path: Path, name: str = REVIEWER) -> str:
+    conn = connect(db_path)
+    try:
+        return add_reviewer(conn, name, clock=lambda: FIXED_NOW)[1]
+    finally:
+        conn.close()
+
+
 @pytest.fixture
-def review_client(db_path: Path, tmp_path: Path) -> Iterator[TestClient]:
-    settings = Settings(
-        api_key=API_KEY,
-        db_path=db_path,
-        backup_dir=tmp_path / "backups",
-        reviewer_key=REVIEWER_KEY,
-    )
-    with TestClient(create_app(settings, clock=lambda: FIXED_NOW)) as test_client:
-        yield test_client
+def review_client(client: TestClient) -> TestClient:
+    return client
 
 
-def reviewer_headers(auth: dict, **extra: str) -> dict[str, str]:
-    return {**auth, "X-Reviewer-Key": REVIEWER_KEY, "X-Actor": REVIEWER, **extra}
+@pytest.fixture
+def token(db_path: Path) -> str:
+    return make_reviewer(db_path)
+
+
+@pytest.fixture
+def reviewer_headers(auth: dict, token: str):
+    def headers(**extra: str) -> dict[str, str]:
+        return {**auth, "X-Reviewer-Token": token, **extra}
+
+    return headers
 
 
 def drafted_lead(client: TestClient, auth: dict, payload: dict, drafts: int = 1) -> int:
@@ -64,12 +75,12 @@ def lead_status(client: TestClient, auth: dict, lead_id: int) -> str:
 
 
 def test_approval_records_human_decision_and_one_simulated_outbox_entry(
-    review_client: TestClient, auth: dict, lead_payload: dict, db_path: Path
+    review_client: TestClient, auth: dict, lead_payload: dict, db_path: Path, reviewer_headers
 ) -> None:
     lead_id = drafted_lead(review_client, auth, lead_payload)
     draft = review_client.get(f"/leads/{lead_id}/drafts", headers=auth).json()[0]
 
-    response = decide(review_client, lead_id, 1, reviewer_headers(auth), reason="Looks right.")
+    response = decide(review_client, lead_id, 1, reviewer_headers(), reason="Looks right.")
 
     assert response.status_code == 201
     body = response.json()
@@ -93,12 +104,12 @@ def test_approval_records_human_decision_and_one_simulated_outbox_entry(
 
 
 def test_rejection_records_decision_without_outbox_entry(
-    review_client: TestClient, auth: dict, lead_payload: dict, db_path: Path
+    review_client: TestClient, auth: dict, lead_payload: dict, db_path: Path, reviewer_headers
 ) -> None:
     lead_id = drafted_lead(review_client, auth, lead_payload)
 
     response = decide(
-        review_client, lead_id, 1, reviewer_headers(auth), decision="rejected", reason="Too vague."
+        review_client, lead_id, 1, reviewer_headers(), decision="rejected", reason="Too vague."
     )
 
     assert response.status_code == 201
@@ -109,53 +120,70 @@ def test_rejection_records_decision_without_outbox_entry(
 
 
 @pytest.mark.parametrize(
-    "headers",
-    [
-        pytest.param({"X-Actor": REVIEWER}, id="api-key-only (n8n)"),
-        pytest.param({"X-Actor": REVIEWER, "X-Reviewer-Key": API_KEY}, id="api-key-as-reviewer"),
-        pytest.param({"X-Actor": REVIEWER, "X-Reviewer-Key": REVIEWER_KEY + "x"}, id="wrong-key"),
-    ],
+    "case",
+    ["api-key-only (n8n)", "api-key-as-token", "unknown-token", "revoked-token"],
 )
-def test_api_key_alone_cannot_decide(
-    review_client: TestClient, auth: dict, lead_payload: dict, db_path: Path, headers: dict
+def test_without_an_active_reviewer_token_nothing_is_decided(
+    review_client: TestClient, auth: dict, lead_payload: dict, db_path: Path, token: str, case: str
 ) -> None:
     lead_id = drafted_lead(review_client, auth, lead_payload)
+    headers = {**auth, "X-Actor": REVIEWER}
+    if case == "api-key-as-token":
+        headers["X-Reviewer-Token"] = API_KEY
+    elif case == "unknown-token":
+        headers["X-Reviewer-Token"] = "fpr_" + "x" * 43
+    elif case == "revoked-token":
+        conn = connect(db_path)
+        try:
+            revoke_reviewer(conn, REVIEWER, clock=lambda: FIXED_NOW)
+        finally:
+            conn.close()
+        headers["X-Reviewer-Token"] = token
 
-    response = decide(review_client, lead_id, 1, {**auth, **headers})
+    response = decide(review_client, lead_id, 1, headers)
 
     assert response.status_code == 403
     assert response.json()["detail"]["code"] == "reviewer_required"
+    assert token not in response.text
     assert rows(db_path, "approvals") == rows(db_path, "outbox") == []
     assert lead_status(review_client, auth, lead_id) == "drafted"
 
 
-def test_review_is_disabled_without_a_reviewer_key(
-    client: TestClient, auth: dict, lead_payload: dict, db_path: Path
-) -> None:
-    lead_id = drafted_lead(client, auth, lead_payload)
-
-    response = decide(client, lead_id, 1, reviewer_headers(auth))
-
-    assert response.status_code == 503
-    assert response.json()["detail"]["code"] == "review_disabled"
-    assert rows(db_path, "approvals") == []
-
-
-def test_reviewer_name_is_required(
-    review_client: TestClient, auth: dict, lead_payload: dict, db_path: Path
+def test_identity_comes_from_the_token_not_x_actor(
+    review_client: TestClient, auth: dict, lead_payload: dict, db_path: Path, reviewer_headers
 ) -> None:
     lead_id = drafted_lead(review_client, auth, lead_payload)
-    headers = {**auth, "X-Reviewer-Key": REVIEWER_KEY}
 
-    assert decide(review_client, lead_id, 1, headers).status_code == 422
-    assert rows(db_path, "approvals") == []
+    response = decide(review_client, lead_id, 1, reviewer_headers(**{"X-Actor": "partner:spoof"}))
+
+    assert response.status_code == 201
+    [approval] = rows(db_path, "approvals")
+    assert (approval["decided_by"], approval["reviewer_id"]) == (REVIEWER, 1)
+    assert {a["actor"] for a in rows(db_path, "audit_log")[-2:]} == {REVIEWER}
+
+
+def test_idempotency_keys_are_isolated_per_reviewer(
+    review_client: TestClient, auth: dict, lead_payload: dict, db_path: Path, reviewer_headers
+) -> None:
+    lead_id = drafted_lead(review_client, auth, lead_payload)
+    other = make_reviewer(db_path, "reviewer:blake")
+    key = {"Idempotency-Key": "review:shared-key"}
+    assert decide(review_client, lead_id, 1, reviewer_headers(**key)).status_code == 201
+
+    response = decide(review_client, lead_id, 1, {**auth, "X-Reviewer-Token": other, **key})
+
+    assert (response.status_code, response.json()["detail"]["code"]) == (
+        422,
+        "idempotency_key_reused",
+    )
+    assert len(rows(db_path, "approvals")) == 1
 
 
 def test_only_the_latest_existing_draft_version_can_be_decided(
-    review_client: TestClient, auth: dict, lead_payload: dict, db_path: Path
+    review_client: TestClient, auth: dict, lead_payload: dict, db_path: Path, reviewer_headers
 ) -> None:
     lead_id = drafted_lead(review_client, auth, lead_payload, drafts=2)
-    headers = reviewer_headers(auth)
+    headers = reviewer_headers()
 
     stale = decide(review_client, lead_id, 1, headers)
     missing = decide(review_client, lead_id, 3, headers)
@@ -168,10 +196,10 @@ def test_only_the_latest_existing_draft_version_can_be_decided(
 
 
 def test_a_decision_is_final(
-    review_client: TestClient, auth: dict, lead_payload: dict, db_path: Path
+    review_client: TestClient, auth: dict, lead_payload: dict, db_path: Path, reviewer_headers
 ) -> None:
     lead_id = drafted_lead(review_client, auth, lead_payload)
-    headers = reviewer_headers(auth)
+    headers = reviewer_headers()
     assert decide(review_client, lead_id, 1, headers).status_code == 201
 
     again = decide(review_client, lead_id, 1, headers, decision="rejected")
@@ -182,10 +210,10 @@ def test_a_decision_is_final(
 
 
 def test_idempotent_retry_replays_without_duplicates(
-    review_client: TestClient, auth: dict, lead_payload: dict, db_path: Path
+    review_client: TestClient, auth: dict, lead_payload: dict, db_path: Path, reviewer_headers
 ) -> None:
     lead_id = drafted_lead(review_client, auth, lead_payload)
-    headers = reviewer_headers(auth, **{"Idempotency-Key": "review:lead-1:v1"})
+    headers = reviewer_headers(**{"Idempotency-Key": "review:lead-1:v1"})
 
     first = decide(review_client, lead_id, 1, headers)
     retry = decide(review_client, lead_id, 1, headers)
@@ -200,7 +228,12 @@ def test_idempotent_retry_replays_without_duplicates(
 
 @pytest.mark.parametrize("status", ["scored", "awaiting_approval", "closed"])
 def test_lead_status_must_allow_review(
-    review_client: TestClient, auth: dict, lead_payload: dict, db_path: Path, status: str
+    review_client: TestClient,
+    auth: dict,
+    lead_payload: dict,
+    db_path: Path,
+    reviewer_headers,
+    status: str,
 ) -> None:
     lead_id = drafted_lead(review_client, auth, lead_payload)
     conn = connect(db_path)
@@ -209,7 +242,7 @@ def test_lead_status_must_allow_review(
     finally:
         conn.close()
 
-    response = decide(review_client, lead_id, 1, reviewer_headers(auth))
+    response = decide(review_client, lead_id, 1, reviewer_headers())
 
     if status == "awaiting_approval":
         assert response.status_code == 201
@@ -232,13 +265,33 @@ def test_lead_status_must_allow_review(
     ids=["unknown-decision", "extra-field", "reason-too-long", "empty"],
 )
 def test_invalid_decision_body_is_422(
-    review_client: TestClient, auth: dict, lead_payload: dict, db_path: Path, body: dict
+    review_client: TestClient,
+    auth: dict,
+    lead_payload: dict,
+    db_path: Path,
+    reviewer_headers,
+    body: dict,
 ) -> None:
     lead_id = drafted_lead(review_client, auth, lead_payload)
 
     response = review_client.post(
-        f"/leads/{lead_id}/drafts/1/approval", json=body, headers=reviewer_headers(auth)
+        f"/leads/{lead_id}/drafts/1/approval", json=body, headers=reviewer_headers()
     )
 
     assert response.status_code == 422
+    assert rows(db_path, "approvals") == []
+
+
+def test_revocation_between_authentication_and_decision_is_refused(
+    review_client: TestClient, auth: dict, lead_payload: dict, db_path: Path, token: str
+) -> None:
+    lead_id = drafted_lead(review_client, auth, lead_payload)
+    conn = connect(db_path)
+    try:
+        reviewer = authenticate(conn, token)
+        revoke_reviewer(conn, REVIEWER, clock=lambda: FIXED_NOW)
+        with pytest.raises(ReviewerNotActive):
+            decide_draft(conn, lead_id, 1, DraftDecisionIn(decision="approved"), reviewer=reviewer)
+    finally:
+        conn.close()
     assert rows(db_path, "approvals") == []

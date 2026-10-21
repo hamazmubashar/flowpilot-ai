@@ -287,6 +287,7 @@ def _approval_out(conn: sqlite3.Connection, approval_id: int) -> ApprovalOut:
         version=draft["version"],
         decision=approval["decision"],
         actor_type=approval["actor_type"],
+        reviewer_id=approval["reviewer_id"],
         decided_by=approval["decided_by"],
         reason=approval["reason"],
         decided_at=approval["decided_at"],
@@ -301,14 +302,13 @@ def _approval_out(conn: sqlite3.Connection, approval_id: int) -> ApprovalOut:
     response_model=ApprovalOut,
     status_code=status.HTTP_201_CREATED,
     responses={
-        403: {"model": ErrorResponse, "description": "Missing or invalid X-Reviewer-Key"},
+        403: {"model": ErrorResponse, "description": "Missing, unknown or revoked reviewer token"},
         404: {"model": ErrorResponse},
         409: {
             "model": ErrorResponse,
             "description": "Already decided, superseded, or wrong status",
         },
         422: {"description": "Validation error or idempotency key reused"},
-        503: {"model": ErrorResponse, "description": "Review disabled (no reviewer key set)"},
     },
 )
 def decide(

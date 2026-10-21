@@ -1,5 +1,6 @@
 """Database-level guardrails: append-only audit, human-only approval, simulated-only sending."""
 
+import hashlib
 import sqlite3
 
 import pytest
@@ -30,11 +31,24 @@ def _draft(conn: sqlite3.Connection, lead_id: int, version: int = 1) -> int:
     return int(cur.lastrowid)
 
 
-def _approval(conn: sqlite3.Connection, draft_id: int, decision: str = "approved") -> int:
+def _reviewer(conn: sqlite3.Connection, name: str = "reviewer@northstar.example") -> int:
+    """Active reviewer with this name (created on first use)."""
+    row = conn.execute("SELECT id FROM reviewers WHERE name = ?", (name,)).fetchone()
+    if row is not None:
+        return int(row[0])
     cur = conn.execute(
-        "INSERT INTO approvals (draft_id, decision, actor_type, decided_by, decided_at) "
-        "VALUES (?, ?, 'human', 'reviewer@northstar.example', ?)",
-        (draft_id, decision, NOW),
+        "INSERT INTO reviewers (name, token_sha256, created_at) VALUES (?, ?, ?)",
+        (name, hashlib.sha256(name.encode()).hexdigest(), NOW),
+    )
+    return int(cur.lastrowid)
+
+
+def _approval(conn: sqlite3.Connection, draft_id: int, decision: str = "approved") -> int:
+    reviewer_id = _reviewer(conn)
+    cur = conn.execute(
+        "INSERT INTO approvals (draft_id, decision, actor_type, reviewer_id, decided_by, "
+        "decided_at) VALUES (?, ?, 'human', ?, 'reviewer@northstar.example', ?)",
+        (draft_id, decision, reviewer_id, NOW),
     )
     return int(cur.lastrowid)
 
@@ -85,9 +99,9 @@ def test_approval_requires_human_actor(conn: sqlite3.Connection) -> None:
     draft_id = _draft(conn, _lead(conn))
     with pytest.raises(sqlite3.IntegrityError, match="CHECK"):
         conn.execute(
-            "INSERT INTO approvals (draft_id, decision, actor_type, decided_by, decided_at) "
-            "VALUES (?, 'approved', 'system', 'auto', ?)",
-            (draft_id, NOW),
+            "INSERT INTO approvals (draft_id, decision, actor_type, reviewer_id, decided_by, "
+            "decided_at) VALUES (?, 'approved', 'system', ?, 'auto', ?)",
+            (draft_id, _reviewer(conn, "auto"), NOW),
         )
 
 
@@ -95,9 +109,9 @@ def test_approval_requires_named_reviewer(conn: sqlite3.Connection) -> None:
     draft_id = _draft(conn, _lead(conn))
     with pytest.raises(sqlite3.IntegrityError, match="CHECK"):
         conn.execute(
-            "INSERT INTO approvals (draft_id, decision, actor_type, decided_by, decided_at) "
-            "VALUES (?, 'approved', 'human', '   ', ?)",
-            (draft_id, NOW),
+            "INSERT INTO approvals (draft_id, decision, actor_type, reviewer_id, decided_by, "
+            "decided_at) VALUES (?, 'approved', 'human', ?, '   ', ?)",
+            (draft_id, _reviewer(conn, "   "), NOW),
         )
 
 
@@ -143,3 +157,46 @@ def test_outbox_content_immutable_after_insert(conn: sqlite3.Connection) -> None
 def test_foreign_keys_enforced(conn: sqlite3.Connection) -> None:
     with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY"):
         _draft(conn, lead_id=9999)
+
+
+# --- reviewer identity (M4.1, migration 0003) -------------------------------------------------
+
+
+def _insert_approval(conn: sqlite3.Connection, draft_id: int, reviewer_id: int | None, name: str):
+    return conn.execute(
+        "INSERT INTO approvals (draft_id, decision, actor_type, reviewer_id, decided_by, "
+        "decided_at) VALUES (?, 'approved', 'human', ?, ?, ?)",
+        (draft_id, reviewer_id, name, NOW),
+    )
+
+
+def test_approval_requires_a_reviewer(conn: sqlite3.Connection) -> None:
+    draft_id = _draft(conn, _lead(conn))
+    with pytest.raises(sqlite3.IntegrityError, match="active reviewer"):
+        _insert_approval(conn, draft_id, None, "reviewer@northstar.example")
+
+
+def test_approval_name_must_match_the_reviewer(conn: sqlite3.Connection) -> None:
+    draft_id = _draft(conn, _lead(conn))
+    reviewer_id = _reviewer(conn, "avery")
+    with pytest.raises(sqlite3.IntegrityError, match="active reviewer"):
+        _insert_approval(conn, draft_id, reviewer_id, "someone-else")
+
+
+def test_revoked_reviewer_cannot_approve_or_be_reinstated(conn: sqlite3.Connection) -> None:
+    draft_id = _draft(conn, _lead(conn))
+    reviewer_id = _reviewer(conn, "avery")
+    conn.execute("UPDATE reviewers SET revoked_at = ? WHERE id = ?", (NOW, reviewer_id))
+    with pytest.raises(sqlite3.IntegrityError, match="active reviewer"):
+        _insert_approval(conn, draft_id, reviewer_id, "avery")
+    with pytest.raises(sqlite3.IntegrityError, match="cannot be reinstated"):
+        conn.execute("UPDATE reviewers SET revoked_at = NULL WHERE id = ?", (reviewer_id,))
+
+
+def test_reviewers_are_kept_and_their_identity_is_fixed(conn: sqlite3.Connection) -> None:
+    reviewer_id = _reviewer(conn, "avery")
+    with pytest.raises(sqlite3.IntegrityError, match="cannot be deleted"):
+        conn.execute("DELETE FROM reviewers WHERE id = ?", (reviewer_id,))
+    for column, value in (("name", "mallory"), ("token_sha256", "0" * 64)):
+        with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+            conn.execute(f"UPDATE reviewers SET {column} = ? WHERE id = ?", (value, reviewer_id))  # noqa: S608

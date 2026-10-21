@@ -1,3 +1,5 @@
+import hashlib
+import json
 import sqlite3
 from pathlib import Path
 
@@ -32,11 +34,12 @@ def test_migrate_creates_db_and_is_idempotent(capsys, paths) -> None:
     assert code == 0
     assert "applied 0001_initial" in out
     assert "applied 0002_llm" in out
+    assert "applied 0003_reviewers" in out
     code, out, _ = run(capsys, "--db", db, "migrate")
     assert code == 0
     assert "up to date" in out
     code, out, _ = run(capsys, "--db", db, "status")
-    assert "schema version: 2" in out
+    assert "schema version: 3" in out
     assert "pending migrations: none" in out
 
 
@@ -219,3 +222,77 @@ def test_llm_check_rejects_unsafe_url(capsys, llm_env) -> None:
     code, _, err = run(capsys, "llm-check")
     assert code == 1
     assert "loopback" in err
+
+
+# --- reviewers (M4.1) ---------------------------------------------------------------------------
+
+
+def test_reviewer_add_shows_token_once_and_stores_only_its_hash(capsys, paths) -> None:
+    db, _ = paths
+    run(capsys, "--db", db, "migrate")
+
+    code, out, err = run(capsys, "--db", db, "reviewer", "add", "avery")
+
+    assert (code, err) == (0, "")
+    token = out.strip().splitlines()[-1]
+    assert token.startswith("fpr_")
+    assert len(token) >= 40
+    conn = connect(Path(db))
+    try:
+        dump = "\n".join(conn.iterdump())
+        [row] = conn.execute("SELECT name, token_sha256, revoked_at FROM reviewers").fetchall()
+        audit = conn.execute("SELECT action, actor, after_json FROM audit_log").fetchall()
+    finally:
+        conn.close()
+    assert token not in dump
+    assert (row["name"], row["revoked_at"]) == ("avery", None)
+    assert row["token_sha256"] == hashlib.sha256(token.encode()).hexdigest()
+    assert [(a[0], a[1], json.loads(a[2])) for a in audit] == [
+        ("reviewer.added", "admin-cli", {"name": "avery"})
+    ]
+    code, out, _ = run(capsys, "--db", db, "reviewer", "list")
+    assert code == 0
+    assert "avery\tactive" in out
+    assert token not in out
+
+
+@pytest.mark.parametrize("name", ["", "has space", "x" * 65])
+def test_reviewer_add_rejects_invalid_names(capsys, paths, name: str) -> None:
+    db, _ = paths
+    run(capsys, "--db", db, "migrate")
+    code, out, err = run(capsys, "--db", db, "reviewer", "add", name)
+    assert code == 1
+    assert "invalid reviewer name" in err
+    assert "fpr_" not in out + err
+
+
+def test_reviewer_add_rejects_duplicates_without_printing_a_token(capsys, paths) -> None:
+    db, _ = paths
+    run(capsys, "--db", db, "migrate")
+    run(capsys, "--db", db, "reviewer", "add", "avery")
+    code, out, err = run(capsys, "--db", db, "reviewer", "add", "avery")
+    assert code == 1
+    assert "already exists" in err
+    assert "fpr_" not in out + err
+
+
+def test_reviewer_revoke_is_permanent_and_audited(capsys, paths) -> None:
+    db, _ = paths
+    run(capsys, "--db", db, "migrate")
+    run(capsys, "--db", db, "reviewer", "add", "avery")
+
+    assert run(capsys, "--db", db, "reviewer", "revoke", "avery")[0] == 0
+    code, _, err = run(capsys, "--db", db, "reviewer", "revoke", "avery")
+    assert code == 1
+    assert "already revoked" in err
+    code, _, err = run(capsys, "--db", db, "reviewer", "revoke", "nobody")
+    assert code == 1
+    assert "does not exist" in err
+    _, out, _ = run(capsys, "--db", db, "reviewer", "list")
+    assert "avery\trevoked" in out
+    conn = connect(Path(db))
+    try:
+        actions = [r[0] for r in conn.execute("SELECT action FROM audit_log ORDER BY id")]
+    finally:
+        conn.close()
+    assert actions == ["reviewer.added", "reviewer.revoked"]

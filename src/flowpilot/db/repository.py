@@ -414,17 +414,20 @@ def insert_approval(
     *,
     draft_id: int,
     decision: str,
+    reviewer_id: int,
     decided_by: str,
     reason: str | None,
     now: str,
 ) -> int:
-    # actor_type is fixed: the schema accepts only 'human', and so does this code.
+    # actor_type is fixed: the schema accepts only 'human', and so does this code. The
+    # approvals_require_active_reviewer trigger re-checks reviewer_id and decided_by.
     cur = conn.execute(
         """
-        INSERT INTO approvals (draft_id, decision, actor_type, decided_by, reason, decided_at)
-        VALUES (?, ?, 'human', ?, ?, ?)
+        INSERT INTO approvals (draft_id, decision, actor_type, reviewer_id, decided_by, reason,
+                               decided_at)
+        VALUES (?, ?, 'human', ?, ?, ?, ?)
         """,
-        (draft_id, decision, decided_by, reason, now),
+        (draft_id, decision, reviewer_id, decided_by, reason, now),
     )
     return int(cur.lastrowid)  # type: ignore[arg-type]
 
@@ -462,3 +465,42 @@ def insert_outbox(
 
 def get_outbox_for_approval(conn: sqlite3.Connection, approval_id: int) -> sqlite3.Row | None:
     return conn.execute("SELECT * FROM outbox WHERE approval_id = ?", (approval_id,)).fetchone()
+
+
+# --- Reviewers (M4.1) ---------------------------------------------------------------------------
+
+_REVIEWER_SELECT = "SELECT id, name, created_at, revoked_at FROM reviewers"
+
+
+def insert_reviewer(conn: sqlite3.Connection, *, name: str, token_sha256: str, now: str) -> int:
+    cur = conn.execute(
+        "INSERT INTO reviewers (name, token_sha256, created_at) VALUES (?, ?, ?)",
+        (name, token_sha256, now),
+    )
+    return int(cur.lastrowid)  # type: ignore[arg-type]
+
+
+def get_reviewer_by_name(conn: sqlite3.Connection, name: str) -> sqlite3.Row | None:
+    return conn.execute(f"{_REVIEWER_SELECT} WHERE name = ?", (name,)).fetchone()
+
+
+def get_active_reviewer(conn: sqlite3.Connection, reviewer_id: int) -> sqlite3.Row | None:
+    return conn.execute(
+        f"{_REVIEWER_SELECT} WHERE id = ? AND revoked_at IS NULL", (reviewer_id,)
+    ).fetchone()
+
+
+def get_active_reviewer_by_token_hash(
+    conn: sqlite3.Connection, token_sha256: str
+) -> sqlite3.Row | None:
+    return conn.execute(
+        f"{_REVIEWER_SELECT} WHERE token_sha256 = ? AND revoked_at IS NULL", (token_sha256,)
+    ).fetchone()
+
+
+def revoke_reviewer(conn: sqlite3.Connection, reviewer_id: int, now: str) -> None:
+    conn.execute("UPDATE reviewers SET revoked_at = ? WHERE id = ?", (now, reviewer_id))
+
+
+def list_reviewers(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    return conn.execute(f"{_REVIEWER_SELECT} ORDER BY id").fetchall()
