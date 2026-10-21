@@ -1,7 +1,8 @@
 # ADR 0003: M3 n8n runtime with network-enforced egress
 
 Status: accepted for the runtime (P1), 2026-10-21. P2 (first workflow) proposed, 2026-10-22:
-built and statically validated, not yet executed; see [P2](#p2-first-workflow-proposed).
+built, statically validated and run once against a scratch database; see
+[P2](#p2-first-workflow-proposed).
 
 ## Context
 
@@ -126,8 +127,17 @@ Application settings therefore cannot be the egress control.
 - The saved workflow was read back with `n8n export:workflow` (stdout only): all three HTTP nodes
   carry the same real credential id.
 
-**Not yet verified:** no execution inside n8n. Expression evaluation, the If/Set behaviour, error
-handling (e.g. a 409 failing the run) and the 200 s timeouts are untested at runtime. Importing
+**Runtime test (2026-10-22, one manual execution, scratch database, `FLOWPILOT_LLM_MODE=off`):**
+an isolated API on a disposable SQLite file seeded with one synthetic `scored` lead (`seed --count
+1 --seed 3202`); the real database was not used. Execute step on `Next scored lead` returned that
+single lead and changed nothing. The full run then reached `Awaiting human approval`: the lead
+became `drafted`; 1 assessment (`rules`) and 1 draft (version 1, `template`); keys
+`n8n:qualify:lead:1:v1` and `n8n:draft:lead:1:v1`; `lead.qualified` and `lead.drafted` audited as
+`n8n:prepare-next-lead` with request id `n8n-3`; 2 `llm_runs` rows (`off`, fallback `disabled`);
+approvals and outbox empty. The workflow stayed inactive with no pinned data.
+
+**Not yet verified:** the LLM path (`ollama` mode) through n8n; a rerun and the empty-queue
+branch; runtime error handling (e.g. a 409 failing the run) and the 200 s timeouts. Importing
 the committed export on a fresh instance (credential bound by name on save) was checked against
 n8n's source code only, not by an actual fresh import.
 
