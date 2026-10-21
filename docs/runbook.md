@@ -117,7 +117,7 @@ requests then use deterministic fallbacks; nothing else changes.
 ## n8n runtime (M3)
 
 `compose.yaml` runs n8n plus two fixed-destination gateways. Design: ADR 0003. Workflows are
-added in later M3 phases; this section covers the runtime only.
+version-controlled in `n8n/workflows/`; see "Import / export a workflow" below.
 
 ### First start
 
@@ -151,11 +151,38 @@ stored credentials.
 There is no recovery: every credential stored in n8n (e.g. the FlowPilot API key credential) is
 unreadable. Workflows themselves survive. Fix: restore the original key from your backup. If it
 is truly gone, stop n8n, move `var/n8n` aside, set a new key, start fresh, and re-create the
-credentials (workflows are version-controlled in the repo from later phases).
+credentials, then re-import the workflows from `n8n/workflows/`.
 
 ### Scenario: rotate the FlowPilot API key
 
 Follow "API key leaked or rotated" above, then update the n8n credential that holds `X-API-Key`.
+
+### Import / export a workflow
+
+Import (`flowpilot-prepare-next-lead`):
+
+1. Create a **Header Auth** credential named exactly **`FlowPilot API`**: header name
+   `X-API-Key`, value = `FLOWPILOT_API_KEY`. It must be the only credential with that name and
+   type; n8n binds the workflow's HTTP nodes to it by name on save.
+2. Import `n8n/workflows/flowpilot-prepare-next-lead.json` into a **new, empty** workflow.
+   Importing into an existing canvas merges the nodes: n8n keeps the old manual trigger, drops
+   the imported one and leaves the chain detached.
+3. Save. Do not activate it. Check that no node shows a missing credential.
+
+Export after a change (keep it inactive, unpin any test data first): use **⋯ → Download**
+(documented by n8n, not verified in this project yet), or read the saved workflow back without
+writing inside the container:
+
+```bash
+docker compose exec -T -e NODE_OPTIONS=--max-old-space-size=256 n8n \
+  n8n export:workflow --all --pretty > /tmp/n8n-export.json   # outside the repo
+```
+
+The CLI output is an array and includes ownership metadata (`shared`, with the personal
+project). Commit only the UI-download fields (`name`, `nodes`, `pinData`, `connections`,
+`active`, `settings`, `versionId`, `meta`, `id`, `tags`), then run
+`uv run pytest tests/test_n8n_workflows.py`. The export holds credential ids and names, never the
+key. The heap cap matters: n8n was observed using up to about 515 MiB of its 1 GiB limit.
 
 ### Verifying the egress boundary
 

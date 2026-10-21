@@ -1,6 +1,7 @@
 # ADR 0003: M3 n8n runtime with network-enforced egress
 
-Status: accepted for the runtime (P1), 2026-10-21. Workflows are decided in later phases.
+Status: accepted for the runtime (P1), 2026-10-21. P2 (first workflow) proposed, 2026-10-22:
+built and statically validated, not yet executed; see [P2](#p2-first-workflow-proposed).
 
 ## Context
 
@@ -93,3 +94,44 @@ Application settings therefore cannot be the egress control.
   not tested in a real browser.
 - Hardening flags cover the modules observed so far. Longer-running or post-login behaviour was
   not exhaustively observed, which is acceptable because the network blocks egress either way.
+
+## P2: first workflow (proposed)
+
+**Decisions**
+
+1. **One manual-trigger workflow, `flowpilot-prepare-next-lead`**, exported to
+   `n8n/workflows/` and kept inactive. It takes the lowest-id `scored` lead (`GET
+   /leads?status=scored&limit=1`; the API orders by id), requests an advisory qualification and a
+   reply draft, and stops before approval. Nodes used: manualTrigger, httpRequest, if, set, noOp.
+2. **n8n holds no business rules.** Its only decision is whether the queue is empty
+   (`total == 0`). Qualification, drafting, status transitions and audit stay in FastAPI.
+3. **Per-lead idempotency keys** `n8n:qualify:lead:<id>:v1` and `n8n:draft:lead:<id>:v1`, so a node
+   retry, a rerun or an overlapping execution replays instead of duplicating. The POSTs carry no
+   body; the routes read only the path and headers.
+4. **Audit attribution:** `X-Actor: n8n:prepare-next-lead` and `X-Request-ID: n8n-<execution id>`.
+5. **Credential by name.** All HTTP nodes use the Header Auth credential `FlowPilot API`
+   (`X-API-Key`). On save, n8n 2.44.4 (`replaceInvalidCredentials`) binds a missing or unknown id
+   to the single credential with that name and type in the project (read from n8n's source).
+
+**Evidence (static only)**
+
+- Node versions (HTTP Request 4.5, If 2.2, Set 3.4) and the HTTP Request field names checked
+  against the pinned image's `n8n-nodes-base` code and a real export.
+- `tests/test_workflow_contract.py` replays the call sequence against FastAPI: lowest-id
+  selection, retries and overlapping runs without duplicates, resume after interruption, 409 on a
+  changed status, and no approval or outbox rows.
+- `tests/test_n8n_workflows.py` validates the committed export: allowlisted nodes, fixed api-gateway
+  URL, approved method/path pairs, idempotency keys on POSTs, a named `httpHeaderAuth` credential
+  reference, no literal key, inactive, no `pinData`, and every node reachable from a trigger.
+- The saved workflow was read back with `n8n export:workflow` (stdout only): all three HTTP nodes
+  carry the same real credential id.
+
+**Not yet verified:** no execution inside n8n. Expression evaluation, the If/Set behaviour, error
+handling (e.g. a 409 failing the run) and the 200 s timeouts are untested at runtime. Importing
+the committed export on a fresh instance (credential bound by name on save) was checked against
+n8n's source code only, not by an actual fresh import.
+
+**Lessons:** importing into an existing workflow merges canvases; n8n kept the old manual trigger
+and dropped the imported one, leaving the chain detached. The reachability check was added to
+catch exactly that. A CLI export also includes ownership metadata (`shared`, with the personal
+project), which is stripped to the UI-download fields before committing.

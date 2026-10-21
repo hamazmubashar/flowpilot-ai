@@ -7,7 +7,8 @@ locally, and every outbound message requires human approval.
 > **Status: Milestone 3 (n8n Orchestration), in progress.** M1 deterministic intake, scoring,
 > audit, and recovery, plus advisory LLM qualification and reply drafting via a local Ollama model
 > with deterministic fallback. LLM calls are **off by default**. M3 in progress: a hardened local
-> n8n runtime (Docker) is configured; **no n8n workflows exist yet**.
+> n8n runtime (Docker) is configured, and one workflow (`flowpilot-prepare-next-lead`) is exported
+> and statically validated but **has not been executed yet**.
 
 ## What M1 does
 
@@ -181,9 +182,32 @@ Live checks against a real model are opt-in and never part of the default suite:
 
 ## n8n runtime (M3, in progress)
 
-`compose.yaml` runs a pinned, hardened n8n (`n8nio/n8n@sha256:c72fa9f1…`, n8n 2.44.4) for later
-workflow orchestration. **No workflows are included yet**; n8n will only ever call the FastAPI
-endpoints above, never send messages, and never approve anything.
+`compose.yaml` runs a pinned, hardened n8n (`n8nio/n8n@sha256:c72fa9f1…`, n8n 2.44.4) for
+workflow orchestration. n8n only calls the FastAPI endpoints above; it never sends messages and
+never approves anything.
+
+### Workflow: `flowpilot-prepare-next-lead` (M3-P2, not yet executed)
+
+[`n8n/workflows/flowpilot-prepare-next-lead.json`](n8n/workflows/flowpilot-prepare-next-lead.json),
+manual trigger, inactive:
+
+```
+Manual trigger → GET /leads?status=scored&limit=1 → queue empty? ── yes → stop
+                                                        └─ no → pick lowest-id lead
+  → POST /leads/{id}/qualification → POST /leads/{id}/drafts → stop: awaiting human approval
+```
+
+- Every call goes to `http://host.docker.internal:8000` (the api-gateway), authenticates with the
+  n8n Header Auth credential **`FlowPilot API`** (`X-API-Key`), and sends `X-Actor:
+  n8n:prepare-next-lead` and `X-Request-ID: n8n-<execution id>`.
+- POSTs carry no body and per-lead idempotency keys (`n8n:qualify:lead:<id>:v1`,
+  `n8n:draft:lead:<id>:v1`), so a rerun or a retried failed execution for the same lead replays
+  instead of duplicating. Node-level automatic retries (Retry On Fail) are not enabled.
+- It stops before approval; nothing reaches the approval or outbox tables.
+- `tests/test_n8n_workflows.py` checks every export statically (node allowlist, fixed URL,
+  approved method/path pairs, idempotency keys, stored credential, inactive, no pinned data, every
+  node reachable from the trigger). `tests/test_workflow_contract.py` replays the same call
+  sequence against FastAPI. Neither runs the workflow inside n8n.
 
 ```
 host 127.0.0.1:5678 ─► ui-gateway ─────────────┐
@@ -268,6 +292,9 @@ Design and evidence: [docs/adr/0003-n8n-orchestration.md](docs/adr/0003-n8n-orch
 - **Browser login to the n8n UI was verified with curl, not a real browser.** The session cookie
   is `Secure; HttpOnly; SameSite=Lax`, which browsers accept on `http://localhost`.
 - **Losing `N8N_ENCRYPTION_KEY` makes stored n8n credentials unrecoverable.**
+- **The n8n workflow has not been executed.** Its export is validated statically and its API call
+  sequence is replayed in tests, but no run inside n8n has been performed. Expression evaluation,
+  the If/Set node behaviour and the 200 s HTTP timeouts are untested at runtime.
 - **Prompt examples can be copied.** The draft prompt includes a worked example (contact "Alex",
   "reporting needs"). A model may copy its name or wording into a real draft; no guard checks that
   the greeting matches the lead's contact name, so human review must catch it.
