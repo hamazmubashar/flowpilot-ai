@@ -95,6 +95,11 @@ class Health(BaseModel):
     database: str
 
 
+class ReviewerOut(BaseModel):
+    id: int
+    name: str
+
+
 class LLMRunInfo(BaseModel):
     model: str | None
     prompt_version: str
@@ -142,6 +147,35 @@ class OutboxOut(BaseModel):
     subject: str
     status: Literal["pending", "sent", "failed"]
     created_at: str
+
+
+class OutboxEntry(BaseModel):
+    """One simulated outbox entry with its lead, draft version and human approval.
+    `channel` can only be "simulated": FlowPilot has no way to send anything."""
+
+    id: int
+    lead_id: int
+    contact_name: str
+    company_name: str
+    draft_id: int
+    draft_version: int
+    approval_id: int
+    decided_by: str
+    decided_at: str
+    channel: Literal["simulated"]
+    recipient: str
+    subject: str
+    body: str
+    status: Literal["pending", "sent", "failed"]
+    created_at: str
+    sent_at: str | None
+
+
+class OutboxPage(BaseModel):
+    items: list[OutboxEntry]
+    total: int
+    limit: int
+    offset: int
 
 
 class ApprovalOut(BaseModel):

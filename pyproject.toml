@@ -20,6 +20,10 @@ dev = [
     "coverage>=7",      # coverage measurement for the 80% acceptance gate
     "ruff>=0.6",        # lint + format in one tool
 ]
+# Optional reviewer console (M5): `uv run --group ui streamlit run src/flowpilot/ui/app.py`.
+ui = [
+    "streamlit>=1.66.1",  # approved for M5; local only, usage statistics disabled in .streamlit/
+]
 
 [project.scripts]
 flowpilot-api = "flowpilot.api.__main__:main"

@@ -1,0 +1,35 @@
+# FlowPilot AI reviewer console (M5). Streamlit reads this file from the working directory, so
+# launch from the repository root. The app refuses to render if the two privacy settings below
+# are not in effect.
+
+[browser]
+# Never send usage statistics to Streamlit (local-first, no external calls).
+gatherUsageStats = false
+serverAddress = "localhost"
+
+[server]
+# Loopback only, like FastAPI, Ollama and the n8n UI.
+address = "127.0.0.1"
+port = 8501
+headless = true
+enableXsrfProtection = true
+runOnSave = false
+
+[client]
+# Tracebacks go to the server console only, never to the browser.
+showErrorDetails = "none"
+showErrorLinks = false
+toolbarMode = "minimal"
+showSidebarNavigation = false
+
+[runner]
+magicEnabled = false
+
+[theme]
+base = "light"
+primaryColor = "#1D4ED8"
+backgroundColor = "#F5F7FB"
+secondaryBackgroundColor = "#EEF2F8"
+textColor = "#0F1E3D"
+borderColor = "#DCE3EE"
+baseRadius = "10px"
