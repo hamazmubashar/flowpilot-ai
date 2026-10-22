@@ -54,10 +54,12 @@ def _pairs(parameters: dict, field: str) -> list[dict]:
     return (parameters.get(field) or {}).get("parameters") or []
 
 
-def _http_violations(node: dict) -> list[str]:
+def _http_violations(node: dict, calls: frozenset | set = ALLOWED_CALLS) -> list[str]:
     name = node.get("name", "?")
     params = node.get("parameters") or {}
     found = []
+    if node.get("retryOnFail"):
+        found.append(f"{name}: automatic retries are not allowed (a write could be repeated)")
 
     method = str(params.get("method", "GET")).upper()
     raw_url = str(params.get("url", ""))
@@ -69,7 +71,7 @@ def _http_violations(node: dict) -> list[str]:
         if any(c in m for m in EXPRESSION.findall(path) for c in "/?#"):
             found.append(f"{name}: path expressions may not contain '/', '?' or '#'")
         template = EXPRESSION.sub("{expr}", path)
-        if (method, template) not in ALLOWED_CALLS:
+        if (method, template) not in calls:
             found.append(f"{name}: {method} /{template} is not an approved call")
         # Only the path selects the action; query values such as `status=awaiting_approval`,
         # header values, node names and notes are harmless wording.
@@ -100,7 +102,7 @@ def _http_violations(node: dict) -> list[str]:
     return found
 
 
-def workflow_violations(workflow: dict) -> list[str]:
+def workflow_violations(workflow: dict, calls: frozenset | set = ALLOWED_CALLS) -> list[str]:
     found = []
     if workflow.get("active", False) is not False:
         found.append("workflow must be exported inactive")
@@ -114,7 +116,7 @@ def workflow_violations(workflow: dict) -> list[str]:
         if node_type not in ALLOWED_NODES:
             found.append(f"{node.get('name', '?')}: node type {node_type!r} is not allowlisted")
         elif node_type == HTTP_NODE:
-            found.extend(_http_violations(node))
+            found.extend(_http_violations(node, calls))
     found.extend(_reachability_violations(workflow))
     return found
 
@@ -378,7 +380,10 @@ def test_prepare_next_lead_export_is_committed() -> None:
 def test_exported_workflow_is_valid(path: Path) -> None:
     workflow = json.loads(path.read_text(encoding="utf-8"))
     assert {"active", "pinData"} <= workflow.keys()  # a renamed key would skip those checks
-    assert workflow_violations(workflow) == []
+    assert path.name in POLICIES, f"{path.name} has no reviewed policy (calls and trigger)"
+    calls, trigger_rules = POLICIES[path.name]
+    assert workflow_violations(workflow, calls) == []
+    assert trigger_rules(workflow) == []
     unbound = [
         n["name"]
         for n in workflow["nodes"]
@@ -455,3 +460,235 @@ def test_automatic_trigger_beside_manual_is_rejected(trigger_type: str) -> None:
 def test_prepare_next_lead_export_uses_manual_trigger_only() -> None:
     workflow = json.loads(PREPARE_NEXT_LEAD.read_text(encoding="utf-8"))
     assert manual_trigger_violations(workflow) == []
+
+
+def test_prepare_next_lead_export_keeps_its_reviewed_calls() -> None:
+    """The M3-P2 workflow is unchanged by the intake workflow: same nodes and the same three
+    API calls (GET /leads, POST qualification, POST drafts), never POST /leads."""
+    workflow = json.loads(PREPARE_NEXT_LEAD.read_text(encoding="utf-8"))
+    assert [n["name"] for n in workflow["nodes"]] == [
+        "When clicking \u2018Execute workflow\u2019", "Next scored lead", "Queue empty?",
+        "Nothing to prepare", "Pick lead", "Qualify", "Draft", "Awaiting human approval",
+    ]  # fmt: skip
+    calls = {
+        (str(n["parameters"].get("method", "GET")), n["parameters"]["url"].split("8000/")[1])
+        for n in workflow["nodes"]
+        if n["type"] == HTTP_NODE
+    }
+    assert {(m, EXPRESSION.sub("{expr}", u.split("?")[0])) for m, u in calls} == ALLOWED_CALLS
+    assert workflow["active"] is False
+
+
+# --- flowpilot-lead-intake: authenticated webhook, POST /leads only ---------------------------
+
+LEAD_INTAKE = ROOT / "n8n" / "workflows" / "flowpilot-lead-intake.json"
+WEBHOOK = "n8n-nodes-base.webhook"
+RESPOND = "n8n-nodes-base.respondToWebhook"
+INTAKE_CALLS = frozenset({("POST", "leads")})
+INTAKE_PATH = "flowpilot-lead-intake"
+
+
+def intake_violations(workflow: dict) -> list[str]:
+    """The intake workflow starts only from one authenticated POST webhook that answers through
+    respond nodes, and its single API call reports failures instead of retrying or throwing."""
+    nodes = workflow.get("nodes") or []
+    triggers = [n for n in nodes if _is_trigger(str(n.get("type", "")))]
+    found = [
+        f"{n.get('name', '?')}: trigger {n.get('type')!r} is not the intake webhook"
+        for n in triggers
+        if n.get("type") != WEBHOOK
+    ]
+    webhooks = [n for n in triggers if n.get("type") == WEBHOOK]
+    if len(webhooks) != 1:
+        return [*found, "intake workflow must have exactly one webhook trigger"]
+    hook = webhooks[0]
+    params = hook.get("parameters") or {}
+    if params.get("httpMethod") != "POST":
+        found.append("webhook must accept POST only")
+    if params.get("path") != INTAKE_PATH:
+        found.append(f"webhook path must be {INTAKE_PATH!r}")
+    credential = (hook.get("credentials") or {}).get("httpHeaderAuth") or {}
+    if params.get("authentication") != "headerAuth" or not credential.get("name"):
+        found.append("webhook must require header authentication (httpHeaderAuth credential)")
+    if params.get("responseMode") != "responseNode":
+        found.append("webhook must answer through Respond to Webhook nodes")
+    if not any(n.get("type") == RESPOND for n in nodes):
+        found.append("intake workflow has no Respond to Webhook node")
+    for node in nodes:
+        if node.get("type") != HTTP_NODE:
+            continue
+        response = ((node.get("parameters") or {}).get("options") or {}).get("response") or {}
+        if not (response.get("response") or {}).get("neverError"):
+            found.append(f"{node['name']}: must keep API error statuses to report them")
+        if node.get("onError") != "continueErrorOutput":
+            found.append(f"{node['name']}: must route connection failures to an error response")
+    return found
+
+
+POLICIES = {
+    "flowpilot-prepare-next-lead.json": (ALLOWED_CALLS, manual_trigger_violations),
+    "flowpilot-lead-intake.json": (INTAKE_CALLS, intake_violations),
+}
+
+
+def intake_fixture() -> dict:
+    return json.loads(LEAD_INTAKE.read_text(encoding="utf-8"))
+
+
+def _intake_node(wf: dict, name: str) -> dict:
+    return next(n for n in wf["nodes"] if n["name"] == name)
+
+
+def _hook_param(key: str, value: Any):
+    def mutate(wf: dict) -> None:
+        _intake_node(wf, "Lead submitted")["parameters"][key] = value
+
+    return mutate
+
+
+def _hook_type(node_type: str):
+    def mutate(wf: dict) -> None:
+        _intake_node(wf, "Lead submitted")["type"] = node_type
+
+    return mutate
+
+
+def _extra_trigger(node_type: str):
+    def mutate(wf: dict) -> None:
+        wf["nodes"].append({"name": "Also", "type": node_type, "parameters": {}, "disabled": True})
+        wf["connections"]["Also"] = _to("Submit to FlowPilot")
+
+    return mutate
+
+
+def _submit(key: str, value: Any):
+    def mutate(wf: dict) -> None:
+        node = _intake_node(wf, "Submit to FlowPilot")
+        if key in node["parameters"]:
+            node["parameters"][key] = value
+        else:
+            node[key] = value
+
+    return mutate
+
+
+def _no_never_error(wf: dict) -> None:
+    del _intake_node(wf, "Submit to FlowPilot")["parameters"]["options"]["response"]
+
+
+def _no_hook_credential(wf: dict) -> None:
+    del _intake_node(wf, "Lead submitted")["credentials"]
+
+
+def _email_node(wf: dict) -> None:
+    wf["nodes"].append({"name": "Email", "type": "n8n-nodes-base.emailSend", "parameters": {}})
+    wf["connections"]["Created?"] = _to("Email", "Duplicate?")
+
+
+def _drop_intake_key(wf: dict) -> None:
+    headers = _intake_node(wf, "Submit to FlowPilot")["parameters"]["headerParameters"]
+    headers["parameters"] = [h for h in headers["parameters"] if h["name"] != "Idempotency-Key"]
+
+
+INTAKE_INVALID = {
+    **{f"{t.rsplit('.', 1)[1]} instead of webhook": (_hook_type(t), "intake webhook")
+       for t in [MANUAL_TRIGGER, *AUTOMATIC_TRIGGERS] if t != WEBHOOK},
+    **{f"{t.rsplit('.', 1)[1]} beside webhook": (_extra_trigger(t), "intake webhook")
+       for t in [MANUAL_TRIGGER, *AUTOMATIC_TRIGGERS] if t != WEBHOOK},
+    "second webhook": (_extra_trigger(WEBHOOK), "exactly one webhook"),
+    "GET webhook": (_hook_param("httpMethod", "GET"), "POST only"),
+    "other webhook path": (_hook_param("path", "anything"), "webhook path"),
+    "unauthenticated webhook": (_hook_param("authentication", "none"), "header authentication"),
+    "webhook credential removed": (_no_hook_credential, "header authentication"),
+    "immediate response": (_hook_param("responseMode", "onReceived"), "Respond to Webhook"),
+    "API errors thrown": (_no_never_error, "keep API error statuses"),
+    "connection failure unhandled": (_submit("onError", "stopWorkflow"), "error response"),
+}  # fmt: skip
+
+INTAKE_CALL_INVALID = {
+    "qualification call": (_submit("url", f"={API_BASE}leads/1/qualification"), "not an approved"),
+    "drafts call": (_submit("url", f"={API_BASE}leads/1/drafts"), "not an approved"),
+    "GET leads": (_submit("method", "GET"), "not an approved"),
+    "approval path": (_submit("url", f"={API_BASE}leads/1/drafts/1/approval"), "approval/outbox"),
+    "outbox path": (_submit("url", f"={API_BASE}outbox"), "approval/outbox"),
+    "external host": (_submit("url", "https://example.com/leads"), "url must"),
+    "automatic retries": (_submit("retryOnFail", True), "automatic retries"),
+    "missing Idempotency-Key": (_drop_intake_key, "Idempotency-Key"),
+    "email node": (_email_node, "is not allowlisted"),
+}
+
+
+def test_lead_intake_export_is_committed_and_inactive() -> None:
+    assert LEAD_INTAKE in WORKFLOW_FILES
+    workflow = intake_fixture()
+    assert workflow["active"] is False
+    assert workflow["pinData"] == {}
+    assert set(POLICIES) == {p.name for p in WORKFLOW_FILES}  # every export is reviewed
+
+
+def test_lead_intake_shape() -> None:
+    workflow = intake_fixture()
+    hook = _intake_node(workflow, "Lead submitted")
+    assert hook["type"] == WEBHOOK
+    assert hook["credentials"]["httpHeaderAuth"]["name"] == "FlowPilot webhook"
+    submit = _intake_node(workflow, "Submit to FlowPilot")
+    params = submit["parameters"]
+    assert (params["method"], params["url"]) == ("POST", f"{API_BASE}leads")
+    assert submit["credentials"]["httpHeaderAuth"]["name"] == "FlowPilot API"
+    headers = {h["name"]: h["value"] for h in params["headerParameters"]["parameters"]}
+    assert headers["Idempotency-Key"] == "=n8n:intake:{{ $json.headers['idempotency-key'] }}"
+    assert headers["X-Actor"] == "n8n:lead-intake"
+    assert params["jsonBody"] == "={{ JSON.stringify($json.body) }}"  # passed through unchanged
+    codes = sorted(
+        n["parameters"]["options"]["responseCode"] for n in workflow["nodes"]
+        if n["type"] == RESPOND
+    )  # fmt: skip
+    assert codes == [200, 201, 400, 422, 502, 503]
+    assert [n["type"] for n in workflow["nodes"]].count(HTTP_NODE) == 1  # intake only
+
+
+def test_intake_key_check_matches_the_api_pattern() -> None:
+    """The workflow's key check plus the `n8n:intake:` prefix must stay inside the API's
+    Idempotency-Key pattern, so a key n8n accepts can never be rejected for its format."""
+    from flowpilot.api.routes import IDEMPOTENCY_KEY_PATTERN
+
+    check = _intake_node(intake_fixture(), "Has Idempotency-Key?")
+    regex = check["parameters"]["conditions"]["conditions"][0]["rightValue"]
+    for key in ("demo-hot-1", "a" * 200, "x.y_z:1-2"):
+        assert re.fullmatch(regex, key)
+        assert re.fullmatch(IDEMPOTENCY_KEY_PATTERN, f"n8n:intake:{key}")
+    for key in ("", "has space", "a" * 201, "slash/no"):
+        assert not re.fullmatch(regex, key)
+
+
+def test_intake_passes_its_policy_but_not_the_prepare_policy() -> None:
+    workflow = intake_fixture()
+    assert workflow_violations(workflow, INTAKE_CALLS) == []
+    assert intake_violations(workflow) == []
+    # POST /leads is allowed only for the intake workflow, never for the prepare workflow.
+    assert any("POST /leads is not an approved call" in v for v in workflow_violations(workflow))
+    assert manual_trigger_violations(workflow) != []
+
+
+@pytest.mark.parametrize("case", INTAKE_INVALID, ids=list(INTAKE_INVALID))
+def test_intake_trigger_and_response_rules(case: str) -> None:
+    mutate, expected = INTAKE_INVALID[case]
+    workflow = intake_fixture()
+    mutate(workflow)
+    violations = intake_violations(workflow)
+    assert any(expected in v for v in violations), violations
+
+
+@pytest.mark.parametrize("case", INTAKE_CALL_INVALID, ids=list(INTAKE_CALL_INVALID))
+def test_intake_call_rules(case: str) -> None:
+    mutate, expected = INTAKE_CALL_INVALID[case]
+    workflow = intake_fixture()
+    mutate(workflow)
+    violations = workflow_violations(workflow, INTAKE_CALLS)
+    assert any(expected in v for v in violations), violations
+
+
+def test_retries_are_rejected_for_every_workflow() -> None:
+    workflow = valid_workflow()
+    _node(workflow, "Draft")["retryOnFail"] = True
+    assert any("automatic retries" in v for v in workflow_violations(workflow))

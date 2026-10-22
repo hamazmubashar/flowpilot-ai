@@ -1,0 +1,427 @@
+{
+  "name": "flowpilot-lead-intake",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "flowpilot-lead-intake",
+        "authentication": "headerAuth",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "7b1e4c52-0a6d-4f3e-9b21-5c8d2e6f1a01",
+      "name": "Lead submitted",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        300
+      ],
+      "webhookId": "3f9a6d2e-8c41-4b7a-a5e0-2d6c9b1f7e10",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": null,
+          "name": "FlowPilot webhook"
+        }
+      },
+      "notes": "POST JSON body = the API's lead fields (see docs/runbook.md). Requires the webhook auth header and an Idempotency-Key header."
+    },
+    {
+      "parameters": {
+        "options": {},
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c2d1b0a9-1f3e-4a5b-8c7d-6e5f4a3b2c01",
+              "leftValue": "={{ $json.headers['idempotency-key'] ?? '' }}",
+              "rightValue": "^[A-Za-z0-9._:-]{1,200}$",
+              "operator": {
+                "type": "string",
+                "operation": "regex"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "7b1e4c52-0a6d-4f3e-9b21-5c8d2e6f1a02",
+      "name": "Has Idempotency-Key?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        220,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ result: 'rejected', message: 'Send an Idempotency-Key header (1-200 of A-Z a-z 0-9 . _ : -). Reuse the same key when retrying the same submission.' }) }}",
+        "options": {
+          "responseCode": 400
+        }
+      },
+      "id": "7b1e4c52-0a6d-4f3e-9b21-5c8d2e6f1a03",
+      "name": "Respond: key required",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        440,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:8000/leads",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Idempotency-Key",
+              "value": "=n8n:intake:{{ $json.headers['idempotency-key'] }}"
+            },
+            {
+              "name": "X-Actor",
+              "value": "n8n:lead-intake"
+            },
+            {
+              "name": "X-Request-ID",
+              "value": "=n8n-{{ $execution.id }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.body) }}",
+        "options": {
+          "timeout": 10000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "7b1e4c52-0a6d-4f3e-9b21-5c8d2e6f1a04",
+      "name": "Submit to FlowPilot",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        440,
+        200
+      ],
+      "retryOnFail": false,
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "sEONbS2q0Mk8f9XG",
+          "name": "FlowPilot API"
+        }
+      },
+      "notes": "Intake only: the API validates, de-duplicates, scores and audits. No retries: a write is never repeated automatically."
+    },
+    {
+      "parameters": {
+        "options": {},
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c2d1b0a9-1f3e-4a5b-8c7d-6e5f4a3b2c02",
+              "leftValue": "={{ $json.statusCode }}",
+              "rightValue": 201,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "7b1e4c52-0a6d-4f3e-9b21-5c8d2e6f1a05",
+      "name": "Created?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        660,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ result: 'created', lead_id: $json.body.lead.id, tier: $json.body.lead.score.tier, route: $json.body.lead.score.route, score: $json.body.lead.score.total, replayed: $json.body.replayed }) }}",
+        "options": {
+          "responseCode": 201
+        }
+      },
+      "id": "7b1e4c52-0a6d-4f3e-9b21-5c8d2e6f1a06",
+      "name": "Respond: created",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        880,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "options": {},
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c2d1b0a9-1f3e-4a5b-8c7d-6e5f4a3b2c03",
+              "leftValue": "={{ $json.statusCode }}",
+              "rightValue": 200,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "7b1e4c52-0a6d-4f3e-9b21-5c8d2e6f1a07",
+      "name": "Duplicate?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        880,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ result: 'duplicate', lead_id: $json.body.lead.id, message: 'Already in FlowPilot (same email and company). Nothing new was stored.' }) }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "7b1e4c52-0a6d-4f3e-9b21-5c8d2e6f1a08",
+      "name": "Respond: duplicate",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1100,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "options": {},
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c2d1b0a9-1f3e-4a5b-8c7d-6e5f4a3b2c04",
+              "leftValue": "={{ $json.statusCode }}",
+              "rightValue": 422,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "7b1e4c52-0a6d-4f3e-9b21-5c8d2e6f1a09",
+      "name": "Invalid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1100,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ result: 'invalid', message: 'FlowPilot rejected the lead. Nothing was stored.', detail: $json.body.detail }) }}",
+        "options": {
+          "responseCode": 422
+        }
+      },
+      "id": "7b1e4c52-0a6d-4f3e-9b21-5c8d2e6f1a10",
+      "name": "Respond: invalid",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1320,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ result: 'error', status: $json.statusCode, message: 'FlowPilot did not accept the submission. Nothing was confirmed.' }) }}",
+        "options": {
+          "responseCode": 502
+        }
+      },
+      "id": "7b1e4c52-0a6d-4f3e-9b21-5c8d2e6f1a11",
+      "name": "Respond: API error",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1320,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ result: 'error', message: 'FlowPilot API unreachable. Nothing was submitted or confirmed.' }) }}",
+        "options": {
+          "responseCode": 503
+        }
+      },
+      "id": "7b1e4c52-0a6d-4f3e-9b21-5c8d2e6f1a12",
+      "name": "Respond: API unreachable",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        660,
+        400
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Lead submitted": {
+      "main": [
+        [
+          {
+            "node": "Has Idempotency-Key?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Idempotency-Key?": {
+      "main": [
+        [
+          {
+            "node": "Submit to FlowPilot",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond: key required",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Submit to FlowPilot": {
+      "main": [
+        [
+          {
+            "node": "Created?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond: API unreachable",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Created?": {
+      "main": [
+        [
+          {
+            "node": "Respond: created",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Duplicate?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Duplicate?": {
+      "main": [
+        [
+          {
+            "node": "Respond: duplicate",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Invalid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Invalid?": {
+      "main": [
+        [
+          {
+            "node": "Respond: invalid",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond: API error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": []
+}

@@ -76,6 +76,9 @@ class Settings:
     port: int = 8000
     enable_docs: bool = False
     llm: LLMConfig = field(default_factory=LLMConfig)
+    # Set only by `flowpilot-demo serve` (never from the environment): marks every response so
+    # demo tooling can prove it is talking to the isolated demo database.
+    demo: bool = False
 
     def __post_init__(self) -> None:
         if len(self.api_key) < MIN_API_KEY_LENGTH:
@@ -95,7 +98,7 @@ class Settings:
         return (
             f"Settings(api_key='***', db_path={str(self.db_path)!r}, "
             f"backup_dir={str(self.backup_dir)!r}, host={self.host!r}, port={self.port}, "
-            f"enable_docs={self.enable_docs}, llm={self.llm!r})"
+            f"enable_docs={self.enable_docs}, llm={self.llm!r}, demo={self.demo})"
         )
 
 

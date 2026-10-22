@@ -27,6 +27,7 @@ from flowpilot.services.review import (
 from flowpilot.settings import LLMConfig, Settings
 
 REQUEST_ID_HEADER = "X-Request-ID"
+DEMO_HEADER = "X-FlowPilot-Environment"
 _REQUEST_ID = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 
 
@@ -101,6 +102,8 @@ def create_app(
         request.state.request_id = rid
         response = await call_next(request)
         response.headers[REQUEST_ID_HEADER] = rid
+        if settings.demo:
+            response.headers[DEMO_HEADER] = "demo"
         return response
 
     @app.exception_handler(IdempotencyKeyReused)
