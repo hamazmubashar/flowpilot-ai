@@ -4,12 +4,14 @@ A production-style AI business workflow automation platform for **Northstar Digi
 fictional B2B consultancy. Portfolio project: synthetic data only, zero paid APIs, everything runs
 locally, and every outbound message requires human approval.
 
-> **Status: Milestone 3 (n8n Orchestration), in progress.** M1 deterministic intake, scoring,
-> audit, and recovery, plus advisory LLM qualification and reply drafting via a local Ollama model
-> with deterministic fallback. LLM calls are **off by default**. M3 in progress: a hardened local
-> n8n runtime (Docker) is configured, and one workflow (`flowpilot-prepare-next-lead`) is exported
-> and statically validated, and has passed **one manual run against a scratch database**.
-> M4 in progress: human approval/rejection of an exact draft version, with a simulated-only outbox.
+> **Status: M1–M4 committed; M5 (reviewer console) implemented, awaiting its milestone commit.**
+> M1 deterministic intake, scoring, audit, and recovery. M2 advisory LLM qualification and reply
+> drafting via a local Ollama model with deterministic fallback (LLM calls are **off by default**).
+> M3 a hardened local n8n runtime (Docker) with one workflow (`flowpilot-prepare-next-lead`),
+> statically validated and run **once against a scratch database**. M4 human approval/rejection of
+> an exact draft version by individually authenticated reviewers, with a simulated-only outbox.
+> M5 an optional Streamlit console over the API: sign-in, Dashboard, Leads, Draft Responses,
+> Outbox (Simulated) and Settings. CSV import is deferred.
 
 ## What M1 does
 
@@ -69,6 +71,8 @@ All endpoints except `/health` require `X-API-Key`. Optional headers: `Idempoten
 | POST | `/leads/{id}/drafts` | New reply draft version (LLM or template) → `201`; `409` unless `scored`/`drafted` |
 | GET | `/leads/{id}/drafts` | All draft versions, oldest first |
 | POST | `/leads/{id}/drafts/{version}/approval` | Human review (M4): body `{"decision": "approved"\|"rejected", "reason"?}` → `201` |
+| GET | `/outbox?status=&limit=&offset=` | Simulated outbox entries (newest first) with lead, draft version and approving reviewer; read-only, nothing is sent (M5) |
+| GET | `/reviewers/me` | Reviewer holding `X-Reviewer-Token` → `{id, name}`; read-only sign-in check (M5) |
 
 **Human review (M4).** The approval endpoint also requires `X-Reviewer-Token`: the reviewer's
 own token from `flowpilot-admin reviewer add <name>` (shown once; only its SHA-256 is stored;
@@ -80,7 +84,35 @@ refuses any approval without an active reviewer. Only the latest draft version o
 `draft_already_decided` / `lead_not_reviewable`). Approval moves the lead to `approved` and
 enqueues one **simulated** outbox entry (`pending`) with that draft's exact content; rejection
 moves it to `rejected`. Nothing is ever sent. `Idempotency-Key` makes retries safe and is scoped
-to the reviewer.
+to the reviewer. `GET /reviewers/me` runs the same token check without writing anything; the M5
+console uses it to sign reviewers in.
+
+**Reviewer console (M5).** Optional Streamlit UI (`ui` dependency group) that calls the API over
+loopback and never opens the database. It binds to `127.0.0.1:8501` with usage statistics off
+(`.streamlit/config.toml`; run it from the repository root):
+
+```bash
+uv run flowpilot-api                                       # in one terminal
+uv run --group ui streamlit run src/flowpilot/ui/app.py    # in another; open http://localhost:8501
+```
+
+The console reads `FLOWPILOT_API_KEY` and `FLOWPILOT_API_URL` (loopback only) like the API. A
+reviewer's token is held only in that browser session's server-side memory: it is never shown,
+logged or saved, and a page reload signs the reviewer out. Every page load re-checks it with
+`GET /reviewers/me`, so a revoked token returns to sign-in before any data is shown.
+
+| Page | What it does (all data from the API) |
+|---|---|
+| Sign in | Reviewer token check (`GET /reviewers/me`) |
+| Dashboard | Totals, new leads per day, leads by source and status, recent leads, pending review, recent audit activity (`GET /leads`, `GET /leads/{id}/audit`) |
+| Leads | Server-side status/tier filters and paging; lead details; Add Lead form (`POST /leads`, with an idempotency key so retries cannot duplicate) |
+| Draft Responses | Queue of `drafted`/`awaiting_approval` leads, lead context, advisory assessment, draft versions; approve or reject the latest version after an explicit confirmation (`POST .../approval` with the reviewer's own token) |
+| Outbox (Simulated) | Read-only list of approved replies (`GET /outbox`); nothing is sent |
+| Settings | Read-only: confirmed reviewer, API address and `/health`, how reviewers are managed |
+
+Not available in the console: text search and source/date filters (the API filters leads by
+status and tier only), CSV import (deferred), reviewer management (CLI only), editing drafts or
+outbox entries. UI tests use Streamlit's in-process `AppTest`; visual checks are manual.
 
 ```bash
 source .env

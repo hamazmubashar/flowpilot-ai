@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import (
     APIRouter,
@@ -30,7 +30,10 @@ from flowpilot.api.schemas import (
     LeadSubmission,
     LeadSummary,
     LLMRunInfo,
+    OutboxEntry,
     OutboxOut,
+    OutboxPage,
+    ReviewerOut,
     ScoreSummary,
 )
 from flowpilot.db import repository as repo
@@ -295,6 +298,35 @@ def _approval_out(conn: sqlite3.Connection, approval_id: int) -> ApprovalOut:
         if outbox is None
         else OutboxOut(**{k: outbox[k] for k in OutboxOut.model_fields}),
     )
+
+
+@protected.get("/outbox", response_model=OutboxPage)
+def list_outbox(
+    conn: Conn,
+    status_filter: Annotated[
+        Literal["pending", "sent", "failed"] | None, Query(alias="status")
+    ] = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 25,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> OutboxPage:
+    """Simulated outbox entries, newest first. Read-only: nothing is written, audited or sent."""
+    rows, total = repo.list_outbox(conn, status=status_filter, limit=limit, offset=offset)
+    return OutboxPage(
+        items=[OutboxEntry(**dict(row)) for row in rows], total=total, limit=limit, offset=offset
+    )
+
+
+@protected.get(
+    "/reviewers/me",
+    response_model=ReviewerOut,
+    responses={
+        403: {"model": ErrorResponse, "description": "Missing, unknown or revoked reviewer token"}
+    },
+)
+def get_current_reviewer(reviewer: Reviewer) -> ReviewerOut:
+    """The active reviewer holding `X-Reviewer-Token` (M5 login check). Read-only: it verifies
+    the token with the same check as review decisions and writes nothing."""
+    return ReviewerOut(id=reviewer.id, name=reviewer.name)
 
 
 @protected.post(

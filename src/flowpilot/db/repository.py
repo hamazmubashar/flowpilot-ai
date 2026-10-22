@@ -467,6 +467,31 @@ def get_outbox_for_approval(conn: sqlite3.Connection, approval_id: int) -> sqlit
     return conn.execute("SELECT * FROM outbox WHERE approval_id = ?", (approval_id,)).fetchone()
 
 
+_OUTBOX_FILTER = """
+    FROM outbox o
+    JOIN approvals a ON a.id = o.approval_id
+    JOIN drafts d ON d.id = o.draft_id
+    JOIN leads l ON l.id = d.lead_id
+    WHERE (:status IS NULL OR o.status = :status)
+"""
+
+
+def list_outbox(
+    conn: sqlite3.Connection, *, status: str | None, limit: int, offset: int
+) -> tuple[list[sqlite3.Row], int]:
+    """Read-only, newest first. The idempotency key is internal and is not selected."""
+    params = {"status": status, "limit": limit, "offset": offset}
+    total = conn.execute(f"SELECT COUNT(*) AS n {_OUTBOX_FILTER}", params).fetchone()["n"]
+    rows = conn.execute(
+        "SELECT o.id, d.lead_id, l.contact_name, l.company_name, o.draft_id, "
+        "d.version AS draft_version, o.approval_id, a.decided_by, a.decided_at, o.channel, "
+        "o.recipient, o.subject, o.body, o.status, o.created_at, o.sent_at "
+        f"{_OUTBOX_FILTER} ORDER BY o.id DESC LIMIT :limit OFFSET :offset",
+        params,
+    ).fetchall()
+    return rows, int(total)
+
+
 # --- Reviewers (M4.1) ---------------------------------------------------------------------------
 
 _REVIEWER_SELECT = "SELECT id, name, created_at, revoked_at FROM reviewers"
