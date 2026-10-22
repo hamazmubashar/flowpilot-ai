@@ -103,6 +103,104 @@ uv run flowpilot-admin migrate
 uv run flowpilot-admin seed                   # same seed => identical data
 ```
 
+This rebuilds the **normal** database. For client demos, use the isolated environment below
+instead: it never touches `var/flowpilot.db`.
+
+## Scenario: portfolio demo environment (isolated)
+
+`flowpilot-demo` runs the whole demo against its own database, `var/demo/flowpilot-demo.db`.
+That path is fixed in code (no variable or `.env` value can redirect it), and every command
+refuses to run if it is the configured `FLOWPILOT_DB_PATH`. The demo API forces LLM mode off,
+so results are deterministic, and marks every response `X-FlowPilot-Environment: demo`.
+
+1. Stop the normal API (the demo API needs port 8000, which n8n's `api-gateway` targets).
+2. Reset and serve:
+
+   ```bash
+   uv run flowpilot-demo reset --yes   # recreates only the demo DB; prints the demo:reviewer token once
+   uv run flowpilot-demo serve         # API on 127.0.0.1:8000 against the demo DB, LLM off
+   ```
+
+3. Prove the API on port 8000 is the demo server (expect `x-flowpilot-environment: demo`):
+
+   ```bash
+   curl -sI http://127.0.0.1:8000/health | grep -i x-flowpilot-environment
+   ```
+
+4. Submit the five scenarios (another terminal). `run` checks the marker first and writes
+   nothing without it; it exits 1 if any outcome differs from the expected one:
+
+   ```bash
+   uv run flowpilot-demo run
+   ```
+
+   | Scenario | Expected |
+   |---|---|
+   | High-priority lead | `201`, lead #1, hot 98, `partner_review` |
+   | Mid-priority lead | `201`, lead #2, warm 60, `sales_queue` |
+   | Low-priority lead | `201`, lead #3, cold 22, `nurture` |
+   | Same lead again (other casing/spacing) | `200`, duplicate of lead #1, nothing new stored |
+   | Invalid input (non-synthetic email) | `422` on `contact_email`, nothing stored |
+
+   Running it again without a reset replays the same requests and creates nothing new.
+
+5. Console: `uv run --group ui streamlit run src/flowpilot/ui/app.py`, sign in with the demo
+   reviewer token. Dashboard and Leads show the three leads.
+6. Drafts through n8n (optional): check the marker (step 3) first, then `docker compose up -d`,
+   open http://localhost:5678 and run `flowpilot-prepare-next-lead` once per lead; it drafts the
+   oldest `scored` lead each time. Review the drafts on Draft Responses; an approval appears in
+   Outbox (Simulated). Nothing is ever sent.
+7. When done: stop the demo API (Ctrl+C) and start the normal one (`uv run flowpilot-api`).
+
+### n8n webhook intake (`flowpilot-lead-intake`, demo database only)
+
+Intake only: n8n forwards one JSON lead to `POST /leads`; the API validates, de-duplicates,
+scores and audits it. Nothing is qualified, drafted, approved or sent.
+
+1. Demo API running (`uv run flowpilot-demo serve`) and the marker check passes. **If
+   `x-flowpilot-environment: demo` is missing, stop: do not send anything.**
+
+   ```bash
+   curl -sI http://127.0.0.1:8000/health | grep -i x-flowpilot-environment
+   ```
+
+2. `docker compose up -d`, open http://localhost:5678.
+3. Once: create a **Header Auth** credential named exactly `FlowPilot webhook`, header name
+   `X-Webhook-Token`, value from `openssl rand -hex 24` (keep it outside the repository). The
+   existing `FlowPilot API` credential is reused.
+4. Import `n8n/workflows/flowpilot-lead-intake.json` into a **new, empty** workflow, confirm both
+   credentials are selected, save. Leave it inactive.
+5. Send a lead. For one call, click **Execute workflow** and use the test URL
+   (`/webhook-test/…`); to demo several calls, toggle the workflow **Active** and use `/webhook/…`:
+
+   ```bash
+   export FP_WEBHOOK_TOKEN='<the credential value>'   # in your shell only
+   curl -s -X POST http://localhost:5678/webhook/flowpilot-lead-intake \
+     -H "X-Webhook-Token: $FP_WEBHOOK_TOKEN" -H "Idempotency-Key: demo-hot-1" \
+     -H "Content-Type: application/json" -d '{
+       "company_name": "Harbor Crest Logistics", "contact_name": "Morgan Reyes",
+       "contact_email": "morgan.reyes@harborcrest.demo.example", "company_size": "201-1000",
+       "industry": "logistics", "service_interest": "process_automation",
+       "budget_band": "over_100k", "timeline": "immediate", "source": "referral",
+       "message": "We re-key orders from email into three systems and want to automate it."}'
+   ```
+
+   The body is exactly the `POST /leads` body. Use a new `Idempotency-Key` per submission and
+   reuse it only when retrying the same one.
+
+   | Situation | Status | Body |
+   |---|---|---|
+   | New lead | `201` | `{"result": "created", "lead_id": 1, "tier": "hot", "route": "partner_review", "score": 98, "replayed": false}` |
+   | Same request retried (same key) | `201` | same, `"replayed": true`; nothing new stored |
+   | Same lead, new key (other casing/spacing) | `200` | `{"result": "duplicate", "lead_id": 1, ...}` |
+   | Non-synthetic email (e.g. `@gmail.com`) or bad field | `422` | `{"result": "invalid", "detail": [...]}` from the API |
+   | No or malformed `Idempotency-Key` | `400` | `{"result": "rejected", ...}`; the API is not called |
+   | Wrong or missing `X-Webhook-Token` | `403` | n8n's own response; nothing runs |
+   | API down | `503` | `{"result": "error", ...}`; nothing confirmed |
+
+6. Stop: toggle the workflow **Inactive** (the production URL then returns 404), then stop the
+   demo API. Never point this workflow at the normal API.
+
 ## Scenario: LLM drafts/qualifications are all fallbacks (M2)
 
 Check `fallback_reason` on the response, or the latest runs:

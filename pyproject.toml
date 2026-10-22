@@ -28,6 +28,7 @@ ui = [
 [project.scripts]
 flowpilot-api = "flowpilot.api.__main__:main"
 flowpilot-admin = "flowpilot.cli:main"
+flowpilot-demo = "flowpilot.demo:main"
 
 [build-system]
 requires = ["uv_build>=0.8.0"]

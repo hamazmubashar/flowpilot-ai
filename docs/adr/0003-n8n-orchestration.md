@@ -145,3 +145,29 @@ n8n's source code only, not by an actual fresh import.
 and dropped the imported one, leaving the chain detached. The reachability check was added to
 catch exactly that. A CLI export also includes ownership metadata (`shared`, with the personal
 project), which is stripped to the UI-download fields before committing.
+
+## Addendum (2026-10-22): webhook lead intake (portfolio demo, Step C)
+
+**Decision.** A second, separate workflow, `flowpilot-lead-intake`, accepts synthetic lead
+submissions and sends each to `POST /leads`. `flowpilot-prepare-next-lead` is unchanged and still
+manual-only.
+
+- Trigger: exactly one webhook, `POST /webhook/flowpilot-lead-intake` (loopback only, through
+  `ui-gateway` on 127.0.0.1:5678), with header authentication from an n8n `httpHeaderAuth`
+  credential named `FlowPilot webhook`. It answers through Respond to Webhook nodes.
+- Calls: only `POST /leads` through `api-gateway` with the existing `FlowPilot API` credential.
+  The caller must send an `Idempotency-Key`; n8n forwards it as `n8n:intake:<key>`, so a retried
+  call replays the original result instead of creating a lead. No qualification, drafting,
+  approval or outbox access; `X-Actor: n8n:lead-intake`.
+- Responses mirror the API: `201` created, `200` duplicate, `422` invalid (the API's own field
+  errors), `400` without a key (nothing called), `502` for any other API status, `503` when the
+  API is unreachable. API errors never become a success response, and HTTP nodes may not retry.
+- Validation (`tests/test_n8n_workflows.py`): each committed export now has its own policy.
+  The prepare workflow keeps its three calls and the manual-trigger rule. The intake workflow may
+  only `POST /leads` from one authenticated POST webhook. An export without a policy fails, and
+  `retryOnFail` is rejected for every workflow. Approval and outbox paths stay forbidden.
+- Execution only against the isolated demo database (`flowpilot-demo serve`, after checking
+  `X-FlowPilot-Environment: demo`); the export is committed inactive.
+
+**Not yet verified at runtime:** import into n8n 2.44.4 and a live run (node versions:
+webhook 2, Respond to Webhook 1.1, IF 2.2, HTTP Request 4.5).

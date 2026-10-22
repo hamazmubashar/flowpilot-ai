@@ -125,6 +125,16 @@ curl -s -X POST http://127.0.0.1:8000/leads \
 Swagger UI is disabled by default because it loads assets from a public CDN; set
 `FLOWPILOT_ENABLE_DOCS=true` to enable it. `/openapi.json` is always served locally.
 
+## Portfolio demo
+
+`uv run flowpilot-demo reset --yes`, `uv run flowpilot-demo serve`, then `uv run flowpilot-demo run`
+submits five synthetic scenarios (hot, warm and cold leads, a duplicate, an invalid email)
+against an isolated demo database that cannot be the normal one, with LLM mode off. See
+[docs/runbook.md](docs/runbook.md#scenario-portfolio-demo-environment-isolated).
+
+The n8n workflow `flowpilot-lead-intake` (inactive by default) accepts the same leads through an
+authenticated webhook and submits them to `POST /leads`; see the runbook's "n8n webhook intake".
+
 ## Admin CLI
 
 | Command | Purpose |
