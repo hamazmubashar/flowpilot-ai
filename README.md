@@ -134,6 +134,9 @@ against an isolated demo database that cannot be the normal one, with LLM mode o
 
 The n8n workflow `flowpilot-lead-intake` (inactive by default) accepts the same leads through an
 authenticated webhook and submits them to `POST /leads`; see the runbook's "n8n webhook intake".
+`uv run flowpilot-demo eval --yes` measures the local model (success rate, fallback reasons,
+latency, guard failures) on synthetic leads in the demo database; see the runbook's
+"Synthetic LLM evaluation".
 
 ## Admin CLI
 
