@@ -152,6 +152,47 @@ so results are deterministic, and marks every response `X-FlowPilot-Environment:
    Outbox (Simulated). Nothing is ever sent.
 7. When done: stop the demo API (Ctrl+C) and start the normal one (`uv run flowpilot-api`).
 
+### Synthetic LLM evaluation (M6, demo database only)
+
+Measures the local Ollama model on synthetic leads: model success rate, fallback reasons,
+latency and guard failures, for qualification and drafting. It is the only command that turns
+the model on; `serve` and `run` stay deterministic with the model off.
+
+```bash
+uv run flowpilot-admin llm-check                       # no inference: Ollama reachable, model installed
+uv run flowpilot-demo eval --yes                       # 3 scenarios + 10 generated leads
+uv run flowpilot-demo eval --yes --count 20 --json /tmp/flowpilot-eval.json   # report outside the repo
+```
+
+- Order: path checks, then the no-inference model check, then a **reset of the demo database**.
+  If Ollama or the model is missing it stops before the reset, so existing demo data is kept.
+- It runs the API in-process against the demo database (no network server, so the normal API
+  on port 8000 can keep running and never receives these requests) and checks the demo marker.
+- Leads are synthetic (`.example`); nothing is approved and nothing reaches the outbox, which is
+  verified at the end, also after an error.
+- The report holds counts, guard names and timings only: no emails, lead messages, raw model
+  output or secrets. Raw output stays in the demo database's `llm_runs`, as for any draft.
+- Keep Ollama otherwise idle while it runs (one generation at a time; other users show up as
+  `busy` fallbacks). The first call loads the model and is reported separately as warm-up.
+- Results describe this machine, model and Ollama version; record `ollama list` alongside them.
+- Write `--json` reports outside the repository (e.g. `/tmp/...`); it refuses to overwrite a file.
+- The reset gives `demo:reviewer` a new token that `eval` does not print, so the console cannot
+  sign in with an older one. To get a sign-in token afterwards, either keep the evaluation data
+  and add another demo reviewer (names are unique and cannot be reused; the token prints once):
+
+  ```bash
+  uv run flowpilot-admin --db var/demo/flowpilot-demo.db reviewer add demo:reviewer-2
+  ```
+
+  or start a fresh demo, which deletes the evaluation leads: `uv run flowpilot-demo reset --yes`.
+
+**Recorded result (reported 2026-10-25):** `qwen2.5:3b`, prompt version `2026.10-p3`,
+13 synthetic leads (3 standard scenarios + 10 generated, seed 5150, the defaults).
+Qualification 13/13 and drafts 13/13 came from the model (no fallbacks, no guard failures),
+no layout repairs; approvals and outbox stayed empty. Latency p50 (successful model calls): qualification 2,676 ms; draft generation 3,247 ms.
+The Ollama version was not recorded. One run on one machine with 13 leads is a small sample:
+it shows the path works, not a measured success rate for other leads, machines or models.
+
 ### n8n webhook intake (`flowpilot-lead-intake`, demo database only)
 
 Intake only: n8n forwards one JSON lead to `POST /leads`; the API validates, de-duplicates,
