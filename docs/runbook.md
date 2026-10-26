@@ -23,6 +23,63 @@ curl -s http://127.0.0.1:8000/health
 
 `/health` returns `503` with `database: migrations_pending | unavailable` when degraded.
 
+## Logs
+
+`flowpilot-api` (and `flowpilot-demo serve`) write one JSON object per line to stderr. Level:
+`FLOWPILOT_LOG_LEVEL` (`DEBUG`, `INFO` default, `WARNING`, `ERROR`).
+
+- `"event": "startup"`: version, host, port, `llm_mode`, `demo`.
+- `"event": "request"`: `request_id` (same as the `X-Request-ID` response header), method, the
+  matched route template (e.g. `/leads/{lead_id}`, or `unmatched`), status, `duration_ms`.
+- `"event": "unhandled_error"` (level `ERROR`): the same request fields plus `error_type` and
+  the code locations (`file:line:function`) of the failure. The client gets a generic 500.
+
+Never logged: query strings, headers, request or response bodies, exception messages, the API
+key, reviewer tokens, lead data. uvicorn's own access log is off (it would print raw paths and
+query strings); its startup/shutdown lines remain plain text. To trace a client report, ask for
+the `X-Request-ID` it received and search the logs for it, then use `GET /leads/{id}/audit` for
+what happened to the lead.
+
+## Public demo deployment (ADR 0005)
+
+Host-independent; nothing here creates cloud resources. Only the proxy is reachable from the
+internet; the API, its demo database and the console stay on internal networks; n8n is not part
+of this deployment.
+
+1. Prepare `deploy/public-demo/.env` (gitignored) from `deploy/public-demo/env.example`: the
+   public host name and HTTP-redirect origin (`FLOWPILOT_PUBLIC_ORIGIN`, needed only when the
+   external HTTPS port is not 443), a TLS directory with `fullchain.pem` and `privkey.pem`, three **different**
+   secrets (`FLOWPILOT_API_KEY`, `FLOWPILOT_CONSOLE_API_KEY`, `FLOWPILOT_DEMO_REVIEWER_TOKEN`),
+   and the refresh interval. For a private trial, a self-signed certificate works:
+
+   ```bash
+   mkdir -p deploy/public-demo/certs && openssl req -x509 -newkey rsa:2048 -nodes -days 30 \
+     -subj "/CN=localhost" -keyout deploy/public-demo/certs/privkey.pem \
+     -out deploy/public-demo/certs/fullchain.pem
+   ```
+
+2. Validate, build and start (only when you decide to deploy):
+
+   ```bash
+   docker compose -f deploy/public-demo/compose.yaml --env-file deploy/public-demo/.env config --quiet
+   docker compose -f deploy/public-demo/compose.yaml --env-file deploy/public-demo/.env up -d --build
+   ```
+
+3. Smoke test: `https://<host>/` shows the sign-in page; sign in with the demo reviewer token;
+   Leads shows three leads and Draft Responses three drafts; an approval appears in Outbox
+   (Simulated) as "not sent". `curl -sI http://<host>/` redirects to HTTPS; repeated fast
+   requests get `429`. The API port is not published (`docker compose ... ps` shows ports only
+   on `proxy`).
+4. Operate: logs are JSON lines (`docker compose ... logs api`); the demo data is rebuilt every
+   `FLOWPILOT_DEMO_REFRESH_SECONDS`, so visitor changes disappear (`docker compose ... logs
+   demo-refresh` shows `demo_refresh` / `demo_refresh_failed` events). Rotate the console key or
+   the reviewer token by editing `.env` and recreating the containers.
+   Troubleshooting: a blank page with `429` on `/static/...` in the browser means the proxy's
+   asset budget is too small for the Streamlit version (see the asset-burst test); an HTTP
+   redirect to the wrong port means `FLOWPILOT_PUBLIC_ORIGIN` is missing or wrong.
+5. Stop: `docker compose -f deploy/public-demo/compose.yaml down` (add `-v` to drop the demo
+   data volume).
+
 ## Scenario: restore from backup (corruption, bad data, accidental deletion)
 
 1. Stop the API (`Ctrl+C` on `flowpilot-api`). Later milestones: pause n8n workflows too.

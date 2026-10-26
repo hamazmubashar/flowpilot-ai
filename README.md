@@ -138,6 +138,16 @@ authenticated webhook and submits them to `POST /leads`; see the runbook's "n8n 
 latency, guard failures) on synthetic leads in the demo database; see the runbook's
 "Synthetic LLM evaluation".
 
+## Public demo deployment (ADR 0005)
+
+Host-independent container setup in `deploy/public-demo/`: nginx (TLS, rate limits) in front of
+the Streamlit console; the API and its demo database stay on internal networks; n8n is not
+deployed; synthetic data only, LLM off, scheduled refresh of the demo data. Public binding needs
+an explicit double opt-in and works only for the demo database. Verified locally with a
+self-signed certificate; not deployed to any host. See
+[docs/adr/0005-public-demo.md](docs/adr/0005-public-demo.md) and the runbook's "Public demo
+deployment".
+
 ## Admin CLI
 
 | Command | Purpose |
@@ -174,6 +184,9 @@ the build.
 - Synthetic data only: emails must use `example.com/.net/.org` or `.example/.test/.invalid`.
 - Audit log is append-only (UPDATE/DELETE blocked by triggers).
 - No automatic approval and no real sending exist anywhere in the codebase or schema.
+- Application logs are JSON lines on stderr with request id, route template, status and timing
+  only: no query strings, headers, bodies, exception messages, keys, tokens or lead data
+  (`FLOWPILOT_LOG_LEVEL`; see the runbook's "Logs").
 
 ## Local LLM (M2)
 

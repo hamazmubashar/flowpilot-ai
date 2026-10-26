@@ -28,10 +28,14 @@ REQUEST_TIMEOUT_S = 5.0
 MAX_TOKEN_LENGTH = 256
 
 
+PUBLIC_DEMO_API_HOST = "api"  # the private Compose service name (ADR 0005)
+
+
 @dataclass(frozen=True)
 class UIConfig:
     api_url: str
     api_key: str = field(repr=False)
+    public_demo: bool = False  # FLOWPILOT_PUBLIC_DEMO=1: the API is the private `api` service
 
     def __post_init__(self) -> None:
         parts = urlsplit(self.api_url)
@@ -41,7 +45,10 @@ class UIConfig:
             port = -1
         if (
             parts.scheme not in {"http", "https"}
-            or parts.hostname not in LOOPBACK_HOSTS
+            or not (
+                parts.hostname in LOOPBACK_HOSTS
+                or (self.public_demo and parts.hostname == PUBLIC_DEMO_API_HOST)
+            )
             or parts.username
             or parts.password
             or port == -1
@@ -68,6 +75,7 @@ def load_ui_config(
     return UIConfig(
         api_url=(merged.get(ENV_PREFIX + "API_URL") or DEFAULT_API_URL).rstrip("/"),
         api_key=merged.get(ENV_PREFIX + "API_KEY") or "",
+        public_demo=merged.get(ENV_PREFIX + "PUBLIC_DEMO") == "1",
     )
 
 

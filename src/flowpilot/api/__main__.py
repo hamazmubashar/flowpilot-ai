@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 import sys
 
+from flowpilot import __version__
 from flowpilot.api.app import StartupError, check_database, create_app
+from flowpilot.logs import configure_logging
 from flowpilot.settings import Settings, SettingsError, load_settings
 
 
@@ -27,12 +30,25 @@ def serve(settings: Settings, prog: str = "flowpilot-api") -> int:
 
     import uvicorn  # imported lazily so config errors surface without server startup noise
 
+    configure_logging(settings.log_level)
+    logging.getLogger("flowpilot.api").info(
+        "api starting",
+        extra={
+            "event": "startup",
+            "version": __version__,
+            "host": settings.host,
+            "port": settings.port,
+            "llm_mode": settings.llm.mode,
+            "demo": settings.demo,
+        },
+    )
     uvicorn.run(
         create_app(settings),
         host=settings.host,
         port=settings.port,
         proxy_headers=False,
         server_header=False,
+        access_log=False,  # replaced by flowpilot's request log (no query strings)
     )
     return 0
 

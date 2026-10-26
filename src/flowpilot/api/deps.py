@@ -25,19 +25,52 @@ def get_settings(request: Request) -> Settings:
     return request.app.state.settings
 
 
+# n8n's key may make only the calls its workflows are validated for (tests/test_n8n_workflows.py).
+N8N_ROUTES = frozenset(
+    {
+        ("GET", "/leads"),
+        ("POST", "/leads"),
+        ("POST", "/leads/{lead_id}/qualification"),
+        ("POST", "/leads/{lead_id}/drafts"),
+    }
+)
+
+
+def _client_for(settings, provided: str | None) -> str | None:
+    """The name of the client whose key matches; every key is compared in constant time."""
+    if provided is None:
+        return None
+    candidate = provided.encode("utf-8")
+    match = None
+    for name, key in (
+        ("default", settings.api_key),
+        ("console", settings.console_api_key),
+        ("n8n", settings.n8n_api_key),
+    ):
+        if key is not None and hmac.compare_digest(candidate, key.encode("utf-8")):
+            match = name
+    return match
+
+
 def require_api_key(
     request: Request,
     provided: Annotated[str | None, Depends(_api_key_header)],
 ) -> None:
-    expected = get_settings(request).api_key
-    if provided is None or not hmac.compare_digest(
-        provided.encode("utf-8"), expected.encode("utf-8")
-    ):
+    client = _client_for(get_settings(request), provided)
+    if client is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={"code": "unauthorized", "message": "missing or invalid X-API-Key"},
             headers={"WWW-Authenticate": "APIKey"},
         )
+    request.state.api_client = client
+    if client == "n8n":
+        route = getattr(request.scope.get("route"), "path", "")
+        if (request.method, route) not in N8N_ROUTES:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={"code": "forbidden", "message": "this API key may not call this endpoint"},
+            )
 
 
 def get_actor(

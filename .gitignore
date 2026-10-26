@@ -2,6 +2,11 @@
 .env
 .env.*
 !.env.example
+# TLS material for the public demo (never commit keys or certificates)
+deploy/public-demo/certs/
+*.pem
+*.key
+*.crt
 
 # Runtime data (databases, backups, n8n state)
 var/

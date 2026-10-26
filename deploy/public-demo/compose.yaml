@@ -1,0 +1,204 @@
+{
+  "name": "flowpilot-public-demo",
+  "services": {
+    "api": {
+      "build": {
+        "context": "../..",
+        "dockerfile": "Dockerfile",
+        "target": "api"
+      },
+      "image": "flowpilot-api:local",
+      "command": [
+        "sh",
+        "-c",
+        "flowpilot-demo refresh --yes && exec flowpilot-demo serve --public"
+      ],
+      "environment": {
+        "FLOWPILOT_PUBLIC_DEMO": "1",
+        "FLOWPILOT_API_KEY": "${FLOWPILOT_API_KEY:?Set FLOWPILOT_API_KEY in deploy/public-demo/.env (see env.example)}",
+        "FLOWPILOT_CONSOLE_API_KEY": "${FLOWPILOT_CONSOLE_API_KEY:?Set FLOWPILOT_CONSOLE_API_KEY in deploy/public-demo/.env (see env.example)}",
+        "FLOWPILOT_DEMO_REVIEWER_TOKEN": "${FLOWPILOT_DEMO_REVIEWER_TOKEN:?Set FLOWPILOT_DEMO_REVIEWER_TOKEN in deploy/public-demo/.env (see env.example)}",
+        "FLOWPILOT_LLM_MODE": "off",
+        "FLOWPILOT_LOG_LEVEL": "${FLOWPILOT_LOG_LEVEL:-INFO}"
+      },
+      "volumes": [
+        "demo-data:/app/var/demo"
+      ],
+      "tmpfs": [
+        "/tmp"
+      ],
+      "user": "10001:10001",
+      "mem_limit": "512m",
+      "networks": [
+        "backend"
+      ],
+      "healthcheck": {
+        "test": [
+          "CMD",
+          "python",
+          "-c",
+          "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).status == 200 else 1)"
+        ],
+        "interval": "30s",
+        "timeout": "5s",
+        "retries": 3,
+        "start_period": "20s"
+      },
+      "read_only": true,
+      "cap_drop": [
+        "ALL"
+      ],
+      "security_opt": [
+        "no-new-privileges:true"
+      ],
+      "pids_limit": 128,
+      "restart": "unless-stopped"
+    },
+    "demo-refresh": {
+      "build": {
+        "context": "../..",
+        "dockerfile": "Dockerfile",
+        "target": "api"
+      },
+      "image": "flowpilot-api:local",
+      "command": [
+        "flowpilot-demo",
+        "refresh",
+        "--yes",
+        "--every",
+        "${FLOWPILOT_DEMO_REFRESH_SECONDS:-3600}"
+      ],
+      "environment": {
+        "FLOWPILOT_PUBLIC_DEMO": "1",
+        "FLOWPILOT_API_KEY": "${FLOWPILOT_API_KEY:?Set FLOWPILOT_API_KEY in deploy/public-demo/.env (see env.example)}",
+        "FLOWPILOT_DEMO_REVIEWER_TOKEN": "${FLOWPILOT_DEMO_REVIEWER_TOKEN:?Set FLOWPILOT_DEMO_REVIEWER_TOKEN in deploy/public-demo/.env (see env.example)}",
+        "FLOWPILOT_LLM_MODE": "off",
+        "FLOWPILOT_LOG_LEVEL": "${FLOWPILOT_LOG_LEVEL:-INFO}"
+      },
+      "volumes": [
+        "demo-data:/app/var/demo"
+      ],
+      "tmpfs": [
+        "/tmp"
+      ],
+      "user": "10001:10001",
+      "mem_limit": "512m",
+      "network_mode": "none",
+      "depends_on": {
+        "api": {
+          "condition": "service_healthy"
+        }
+      },
+      "read_only": true,
+      "cap_drop": [
+        "ALL"
+      ],
+      "security_opt": [
+        "no-new-privileges:true"
+      ],
+      "pids_limit": 128,
+      "restart": "unless-stopped"
+    },
+    "console": {
+      "build": {
+        "context": "../..",
+        "dockerfile": "Dockerfile",
+        "target": "console"
+      },
+      "image": "flowpilot-console:local",
+      "environment": {
+        "FLOWPILOT_PUBLIC_DEMO": "1",
+        "FLOWPILOT_API_URL": "http://api:8000",
+        "FLOWPILOT_API_KEY": "${FLOWPILOT_CONSOLE_API_KEY:?Set FLOWPILOT_CONSOLE_API_KEY in deploy/public-demo/.env (see env.example)}",
+        "STREAMLIT_SERVER_ADDRESS": "0.0.0.0",
+        "STREAMLIT_BROWSER_GATHER_USAGE_STATS": "false"
+      },
+      "tmpfs": [
+        "/tmp"
+      ],
+      "user": "10001:10001",
+      "mem_limit": "768m",
+      "networks": [
+        "backend",
+        "frontend"
+      ],
+      "depends_on": {
+        "api": {
+          "condition": "service_healthy"
+        }
+      },
+      "healthcheck": {
+        "test": [
+          "CMD",
+          "python",
+          "-c",
+          "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health', timeout=3).status == 200 else 1)"
+        ],
+        "interval": "30s",
+        "timeout": "5s",
+        "retries": 3,
+        "start_period": "20s"
+      },
+      "read_only": true,
+      "cap_drop": [
+        "ALL"
+      ],
+      "security_opt": [
+        "no-new-privileges:true"
+      ],
+      "pids_limit": 128,
+      "restart": "unless-stopped"
+    },
+    "proxy": {
+      "image": "nginxinc/nginx-unprivileged:1.27-alpine",
+      "environment": {
+        "FLOWPILOT_PUBLIC_HOST": "${FLOWPILOT_PUBLIC_HOST:?Set FLOWPILOT_PUBLIC_HOST in deploy/public-demo/.env (see env.example)}",
+        "NGINX_ENVSUBST_FILTER": "^FLOWPILOT_",
+        "FLOWPILOT_PUBLIC_ORIGIN": "${FLOWPILOT_PUBLIC_ORIGIN:-https://${FLOWPILOT_PUBLIC_HOST}}"
+      },
+      "ports": [
+        "${FLOWPILOT_HTTP_PORT:-80}:8080",
+        "${FLOWPILOT_HTTPS_PORT:-443}:8443"
+      ],
+      "volumes": [
+        "./nginx/default.conf.template:/etc/nginx/templates/default.conf.template:ro",
+        "${FLOWPILOT_TLS_DIR:?Set FLOWPILOT_TLS_DIR in deploy/public-demo/.env (see env.example)}:/etc/nginx/certs:ro"
+      ],
+      "tmpfs": [
+        "/tmp",
+        "/etc/nginx/conf.d:uid=101,gid=101,mode=0755"
+      ],
+      "mem_limit": "128m",
+      "networks": [
+        "frontend",
+        "edge"
+      ],
+      "depends_on": {
+        "console": {
+          "condition": "service_healthy"
+        }
+      },
+      "read_only": true,
+      "cap_drop": [
+        "ALL"
+      ],
+      "security_opt": [
+        "no-new-privileges:true"
+      ],
+      "pids_limit": 128,
+      "restart": "unless-stopped"
+    }
+  },
+  "networks": {
+    "backend": {
+      "internal": true
+    },
+    "frontend": {
+      "internal": true
+    },
+    "edge": {}
+  },
+  "volumes": {
+    "demo-data": {}
+  }
+}
