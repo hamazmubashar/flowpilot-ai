@@ -9,6 +9,8 @@ or sent to the browser. A page reload starts a new session and requires signing 
 
 from __future__ import annotations
 
+import os
+
 import streamlit as st
 
 from flowpilot.settings import LOOPBACK_HOSTS, SettingsError
@@ -41,10 +43,15 @@ ERRORS = {
 
 
 def runtime_is_local() -> bool:
-    """Fail closed if Streamlit was started without the repository's privacy settings."""
+    """Fail closed if Streamlit was started without the repository's privacy settings. Only the
+    explicit public demo (FLOWPILOT_PUBLIC_DEMO=1, ADR 0005) may bind 0.0.0.0, inside a private
+    container network behind the TLS proxy."""
+    allowed = set(LOOPBACK_HOSTS)
+    if os.environ.get("FLOWPILOT_PUBLIC_DEMO") == "1":
+        allowed.add("0.0.0.0")  # noqa: S104
     return (
         st.get_option("browser.gatherUsageStats") is False
-        and st.get_option("server.address") in LOOPBACK_HOSTS
+        and st.get_option("server.address") in allowed
     )
 
 

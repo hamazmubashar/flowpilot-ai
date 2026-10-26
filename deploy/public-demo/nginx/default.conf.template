@@ -1,0 +1,84 @@
+# Public demo edge (ADR 0005): TLS, security headers and per-client rate limits in front of the
+# Streamlit console only. The API and n8n are not reachable from here. Rendered by the nginx image
+# with envsubst; only FLOWPILOT_* variables are substituted (NGINX_ENVSUBST_FILTER).
+
+# Rate limits per client address, by traffic class. One Streamlit page load fetches dozens of
+# fingerprinted JS/CSS chunks at once over HTTP/2 (and nginx counts every concurrent HTTP/2 stream
+# as a connection), so static assets get their own generous budget; pages, Streamlit endpoints and
+# websocket session opens keep tight ones. Separate connection zones stop an asset burst from
+# using up the page or websocket budget.
+limit_req_zone $binary_remote_addr zone=flowpilot_req:10m rate=10r/s;
+limit_req_zone $binary_remote_addr zone=flowpilot_assets:10m rate=100r/s;
+limit_req_zone $binary_remote_addr zone=flowpilot_ws:10m rate=2r/s;
+limit_conn_zone $binary_remote_addr zone=flowpilot_conn:10m;
+limit_conn_zone $binary_remote_addr zone=flowpilot_assets_conn:10m;
+limit_conn_zone $binary_remote_addr zone=flowpilot_ws_conn:10m;
+limit_req_status 429;
+limit_conn_status 429;
+server_tokens off;
+
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ""      close;
+}
+
+# Plain HTTP only redirects, to the operator-configured public origin (scheme, host and external
+# port). The client's Host header is never used, so the redirect cannot be pointed elsewhere and
+# keeps a non-standard external port (e.g. a local trial on :18443).
+server {
+    listen 8080 default_server;
+    server_name _;
+    return 301 ${FLOWPILOT_PUBLIC_ORIGIN}$request_uri;
+}
+
+server {
+    listen 8443 ssl;
+    http2 on;
+    server_name ${FLOWPILOT_PUBLIC_HOST};
+
+    ssl_certificate     /etc/nginx/certs/fullchain.pem;
+    ssl_certificate_key /etc/nginx/certs/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_session_cache   shared:flowpilot_tls:10m;
+
+    add_header Strict-Transport-Security "max-age=31536000" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header Referrer-Policy "no-referrer" always;
+
+    client_max_body_size 1m;
+
+    # Fingerprinted, immutable Streamlit assets (/static/js, /static/css, /static/media).
+    # Burst 400 covers every chunk this Streamlit version ships; 128 matches nginx's default
+    # http2_max_concurrent_streams, so a browser's parallel fetches are never refused.
+    location /static/ {
+        limit_req zone=flowpilot_assets burst=400 nodelay;
+        limit_conn flowpilot_assets_conn 128;
+        proxy_pass http://console:8501;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+    }
+
+    # Streamlit's websocket: one long-lived connection per browser tab; opens are rare.
+    location /_stcore/stream {
+        limit_req zone=flowpilot_ws burst=10 nodelay;
+        limit_conn flowpilot_ws_conn 20;
+        proxy_pass http://console:8501;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_set_header Host $host;
+        proxy_read_timeout 3600s;
+    }
+
+    # Pages and Streamlit endpoints (/, /_stcore/health, /_stcore/host-config, ...).
+    location / {
+        limit_req zone=flowpilot_req burst=40 nodelay;
+        limit_conn flowpilot_conn 20;
+        proxy_pass http://console:8501;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+    }
+}

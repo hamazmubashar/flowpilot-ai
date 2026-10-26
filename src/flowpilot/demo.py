@@ -11,7 +11,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
+import os
 import sys
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -26,7 +29,9 @@ from flowpilot.db.migrate import migrate
 from flowpilot.evaluation import Report, RunRecord, format_report, report_dict, summarize
 from flowpilot.llm.client import LLMClient, LLMError, OllamaClient
 from flowpilot.llm.prompts import PROMPT_VERSION
-from flowpilot.services.reviewers import add_reviewer
+from flowpilot.logs import LEVELS as LOG_LEVELS
+from flowpilot.logs import configure_logging
+from flowpilot.services.reviewers import TOKEN_PATTERN, add_reviewer
 from flowpilot.settings import (
     LLMConfig,
     Settings,
@@ -36,6 +41,8 @@ from flowpilot.settings import (
     load_storage_paths,
 )
 from flowpilot.synthetic import generate_leads
+
+log = logging.getLogger("flowpilot.demo")
 
 DEMO_DB = Path("var/demo/flowpilot-demo.db")
 DEMO_REVIEWER = "demo:reviewer"
@@ -388,6 +395,113 @@ def evaluate(
     return Report(meta, summarize(records, repairs), warmup, notes)
 
 
+# --- public demo (ADR 0005): container bind and scheduled refresh -------------------------------
+
+PUBLIC_DEMO_ENV = "FLOWPILOT_PUBLIC_DEMO"
+REVIEWER_TOKEN_ENV = "FLOWPILOT_DEMO_REVIEWER_TOKEN"  # noqa: S105 - variable name, not a value
+SNAPSHOT_NAME = "flowpilot-demo.snapshot.db"
+
+
+def public_demo_enabled(environ: dict | None = None) -> bool:
+    return (os.environ if environ is None else environ).get(PUBLIC_DEMO_ENV) == "1"
+
+
+def public_settings(base: Settings | None = None, environ: dict | None = None) -> Settings:
+    """Demo settings bound to 0.0.0.0 inside a private container network. Needs both this
+    explicit call (`serve --public`) and FLOWPILOT_PUBLIC_DEMO=1; the database, LLM-off mode
+    and demo marker are exactly those of `serve`."""
+    if not public_demo_enabled(environ):
+        raise DemoError(
+            f"public mode needs {PUBLIC_DEMO_ENV}=1 (see docs/adr/0005-public-demo.md); "
+            "use `flowpilot-demo serve` for local demos"
+        )
+    return replace(demo_settings(base), host="0.0.0.0", public_bind=True)  # noqa: S104
+
+
+def _remove_db(path: Path) -> None:
+    for suffix in ("", "-wal", "-shm"):
+        Path(f"{path}{suffix}").unlink(missing_ok=True)
+
+
+def build_snapshot(target: Path, api_key: str, reviewer_token: str) -> int:
+    """A complete synthetic demo database at `target`: the demo reviewer with the operator's
+    token, the five scenarios, and a template draft (LLM off) for each scored lead."""
+    conn = connect(target)
+    try:
+        migrate(conn)
+        add_reviewer(conn, DEMO_REVIEWER, token=reviewer_token)
+    finally:
+        conn.close()
+    from fastapi.testclient import TestClient  # in-process: no socket, no server
+
+    settings = Settings(api_key=api_key, db_path=target, backup_dir=target.parent, demo=True)
+    with TestClient(create_app(settings, llm=None)) as api:
+        outcomes = run(api_key, transport=api._transport)
+        if not all(o.ok for o in outcomes):
+            raise DemoError("demo scenarios did not produce their expected outcomes")
+        created = [o.lead_id for o in outcomes if o.status == 201]
+        for lead_id in created:
+            response = api.post(
+                f"/leads/{lead_id}/drafts",
+                headers={"X-API-Key": api_key, "Idempotency-Key": f"demo-draft-{lead_id}"},
+            )
+            if response.status_code != 201:
+                raise DemoError(f"draft for lead {lead_id} returned {response.status_code}")
+    return len(created)
+
+
+def refresh(*, yes: bool, reviewer_token: str | None, settings: Settings | None = None) -> int:
+    """Rebuild the demo data and copy it into the live demo database with SQLite's online
+    backup API, which is safe while the API is serving. Returns the number of leads."""
+    if not yes:
+        raise DemoError("refresh replaces the demo data; re-run with --yes to confirm")
+    if not reviewer_token or not TOKEN_PATTERN.match(reviewer_token):
+        raise DemoError(f"{REVIEWER_TOKEN_ENV} must be fpr_ plus 40-128 URL-safe characters")
+    base = settings or load_settings()
+    _check_isolated(DEMO_DB, base.db_path)
+    DEMO_DB.parent.mkdir(parents=True, exist_ok=True)
+    snapshot = DEMO_DB.with_name(SNAPSHOT_NAME)
+    _remove_db(snapshot)
+    try:
+        leads = build_snapshot(snapshot, base.api_key, reviewer_token)
+        source, live = connect(snapshot), connect(DEMO_DB)
+        try:
+            source.backup(live)
+            if live.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                raise DemoError("refreshed demo database failed integrity_check")
+        finally:
+            live.close()
+            source.close()
+    finally:
+        _remove_db(snapshot)
+    return leads
+
+
+def refresh_forever(
+    every_s: int, reviewer_token: str | None, *, sleep=time.sleep, rounds: int | None = None
+) -> int:
+    """Wait `every_s`, refresh, repeat; returns the number of failed rounds. The first refresh
+    is done by the API container. A failed round is logged (error type and code location only)
+    and the loop keeps running: the snapshot is built separately before anything is copied, so a
+    failure while building it leaves the previous demo data in place."""
+    if every_s < 300:
+        raise DemoError("--every must be at least 300 seconds")
+    if not reviewer_token or not TOKEN_PATTERN.match(reviewer_token):
+        raise DemoError(f"{REVIEWER_TOKEN_ENV} must be fpr_ plus 40-128 URL-safe characters")
+    done = failures = 0
+    while rounds is None or done < rounds:
+        sleep(every_s)
+        try:
+            leads = refresh(yes=True, reviewer_token=reviewer_token)
+        except Exception:
+            failures += 1
+            log.exception("demo refresh failed", extra={"event": "demo_refresh_failed"})
+        else:
+            log.info("demo data refreshed", extra={"event": "demo_refresh", "leads": leads})
+        done += 1
+    return failures
+
+
 # --- CLI -----------------------------------------------------------------------------------------
 
 
@@ -396,7 +510,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     reset_cmd = sub.add_parser("reset", help="delete and recreate the demo database")
     reset_cmd.add_argument("--yes", action="store_true", help="confirm the reset")
-    sub.add_parser("serve", help="serve the API on 127.0.0.1:8000 against the demo database")
+    serve_cmd = sub.add_parser("serve", help="serve the API on 127.0.0.1:8000 (demo database)")
+    serve_cmd.add_argument(
+        "--public",
+        action="store_true",
+        help=f"bind 0.0.0.0 inside a private container network (needs {PUBLIC_DEMO_ENV}=1)",
+    )
+    refresh_cmd = sub.add_parser(
+        "refresh", help="rebuild the demo data in place (safe while serving)"
+    )
+    refresh_cmd.add_argument("--yes", action="store_true", help="confirm replacing the demo data")
+    refresh_cmd.add_argument(
+        "--every", type=int, help="keep running: wait this many seconds before each refresh"
+    )
     sub.add_parser("run", help="submit the five demo scenarios to the demo API")
     eval_cmd = sub.add_parser("eval", help="measure the local model on synthetic demo leads")
     eval_cmd.add_argument("--yes", action="store_true", help="confirm resetting the demo database")
@@ -413,13 +539,26 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"demo database reset: {DEMO_DB}")
             print(f"demo reviewer {DEMO_REVIEWER} token (shown once, sign in with it): {token}")
             return 0
+        if args.command == "refresh":
+            level = os.environ.get("FLOWPILOT_LOG_LEVEL", "INFO").strip().upper()
+            configure_logging(level if level in LOG_LEVELS else "INFO")
+            token = os.environ.get(REVIEWER_TOKEN_ENV)
+            if args.every is not None:
+                if not args.yes:
+                    raise DemoError("refresh replaces the demo data; re-run with --yes to confirm")
+                refresh_forever(args.every, token)
+                return 0
+            leads = refresh(yes=args.yes, reviewer_token=token)
+            print(f"flowpilot-demo: demo data refreshed ({leads} leads, drafts ready for review)")
+            return 0
         if args.command == "serve":
-            settings = demo_settings()
+            settings = public_settings() if args.public else demo_settings()
             if not DEMO_DB.is_file():
                 raise DemoError(f"{DEMO_DB} does not exist; run `flowpilot-demo reset --yes`")
             from flowpilot.api.__main__ import serve
 
-            print(f"flowpilot-demo: serving {DEMO_DB} on {DEMO_URL} (LLM off)", file=sys.stderr)
+            where = f"0.0.0.0:{settings.port} (public demo)" if args.public else DEMO_URL
+            print(f"flowpilot-demo: serving {DEMO_DB} on {where} (LLM off)", file=sys.stderr)
             return serve(settings, prog="flowpilot-demo")
         if args.command == "eval":
             if args.json is not None and args.json.exists():

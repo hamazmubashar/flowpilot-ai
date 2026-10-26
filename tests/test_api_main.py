@@ -52,5 +52,11 @@ def test_serves_on_loopback(monkeypatch, no_server, db_path: Path) -> None:
     monkeypatch.setenv("FLOWPILOT_DB_PATH", str(db_path))
     assert main() == 0
     assert no_server == [
-        {"host": "127.0.0.1", "port": 8000, "proxy_headers": False, "server_header": False}
+        {
+            "host": "127.0.0.1",
+            "port": 8000,
+            "proxy_headers": False,
+            "server_header": False,
+            "access_log": False,  # replaced by flowpilot's privacy-safe request log
+        }
     ]

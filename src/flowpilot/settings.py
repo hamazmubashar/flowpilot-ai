@@ -18,6 +18,7 @@ MIN_API_KEY_LENGTH = 32
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 
 LLM_MODES = ("off", "ollama")
+LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
 LLM_TIMEOUT_RANGE_S = (5.0, 180.0)
 _MODEL_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}$")
 
@@ -79,6 +80,14 @@ class Settings:
     # Set only by `flowpilot-demo serve` (never from the environment): marks every response so
     # demo tooling can prove it is talking to the isolated demo database.
     demo: bool = False
+    log_level: str = "INFO"
+    # Optional separate credentials (ADR 0005): the console and n8n can each get their own key,
+    # so either can be rotated alone; n8n's key is limited to its workflow calls.
+    console_api_key: str | None = None
+    n8n_api_key: str | None = None
+    # Set only by `flowpilot-demo serve --public` (never from the environment): allows binding
+    # 0.0.0.0 inside a private container network. Requires demo mode; see ADR 0005.
+    public_bind: bool = False
 
     def __post_init__(self) -> None:
         if len(self.api_key) < MIN_API_KEY_LENGTH:
@@ -86,19 +95,41 @@ class Settings:
                 f"FLOWPILOT_API_KEY must be at least {MIN_API_KEY_LENGTH} characters; "
                 "generate one with `flowpilot-admin gen-key`."
             )
-        if self.host not in LOOPBACK_HOSTS:
+        if self.public_bind and not self.demo:
+            raise SettingsError("public binding is only allowed for the isolated demo (ADR 0005).")
+        if self.host not in LOOPBACK_HOSTS and not (self.public_bind and self.host == "0.0.0.0"):  # noqa: S104
             raise SettingsError(
                 f"FLOWPILOT_HOST={self.host!r} is not a loopback address; "
                 f"allowed values: {', '.join(sorted(LOOPBACK_HOSTS))}."
             )
         if not 1 <= self.port <= 65535:
             raise SettingsError(f"FLOWPILOT_PORT={self.port} is out of range.")
+        keys = {"FLOWPILOT_API_KEY": self.api_key}
+        for name, key in (
+            ("FLOWPILOT_CONSOLE_API_KEY", self.console_api_key),
+            ("FLOWPILOT_N8N_API_KEY", self.n8n_api_key),
+        ):
+            if key is None:
+                continue
+            if len(key) < MIN_API_KEY_LENGTH:
+                raise SettingsError(f"{name} must be at least {MIN_API_KEY_LENGTH} characters.")
+            if key in keys.values():
+                raise SettingsError(f"{name} must differ from every other API key.")
+            keys[name] = key
+        if self.log_level not in LOG_LEVELS:
+            raise SettingsError(
+                f"FLOWPILOT_LOG_LEVEL={self.log_level!r} is invalid; "
+                f"allowed: {', '.join(LOG_LEVELS)}."
+            )
 
     def __repr__(self) -> str:  # never leak the key into logs or tracebacks
         return (
             f"Settings(api_key='***', db_path={str(self.db_path)!r}, "
             f"backup_dir={str(self.backup_dir)!r}, host={self.host!r}, port={self.port}, "
-            f"enable_docs={self.enable_docs}, llm={self.llm!r}, demo={self.demo})"
+            f"enable_docs={self.enable_docs}, llm={self.llm!r}, demo={self.demo}, "
+            f"log_level={self.log_level!r}, "
+            f"console_api_key={'***' if self.console_api_key else None}, "
+            f"n8n_api_key={'***' if self.n8n_api_key else None}, public_bind={self.public_bind})"
         )
 
 
@@ -209,5 +240,8 @@ def load_settings(
         host=get("HOST", "127.0.0.1") or "127.0.0.1",
         port=port,
         enable_docs=_parse_bool("FLOWPILOT_ENABLE_DOCS", get("ENABLE_DOCS", "false") or ""),
+        log_level=(get("LOG_LEVEL", "INFO") or "INFO").strip().upper(),
+        console_api_key=get("CONSOLE_API_KEY") or None,
+        n8n_api_key=get("N8N_API_KEY") or None,
         llm=_llm(merged),
     )

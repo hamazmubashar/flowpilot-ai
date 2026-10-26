@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 import re
+import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -28,7 +30,14 @@ from flowpilot.settings import LLMConfig, Settings
 
 REQUEST_ID_HEADER = "X-Request-ID"
 DEMO_HEADER = "X-FlowPilot-Environment"
+log = logging.getLogger("flowpilot.api")
 _REQUEST_ID = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+
+
+def _route(request: Request) -> str:
+    """The matched route template (e.g. `/leads/{lead_id}`), never the raw path or query."""
+    route = request.scope.get("route")
+    return str(getattr(route, "path", "unmatched"))
 
 
 class StartupError(RuntimeError):
@@ -100,7 +109,28 @@ def create_app(
         incoming = request.headers.get(REQUEST_ID_HEADER, "")
         rid = incoming if _REQUEST_ID.match(incoming) else uuid.uuid4().hex
         request.state.request_id = rid
-        response = await call_next(request)
+        started = time.perf_counter()
+        fields = {"event": "request", "request_id": rid, "method": request.method}
+        try:
+            response = await call_next(request)
+        except Exception:
+            # Logged with type and code locations only (see flowpilot.logs), then re-raised so
+            # the client still gets a generic 500 with no internal details.
+            log.exception(
+                "unhandled error",
+                extra={**fields, "event": "unhandled_error", "route": _route(request)},
+            )
+            raise
+        log.info(
+            "request",
+            extra={
+                **fields,
+                "client": getattr(request.state, "api_client", None),
+                "route": _route(request),
+                "status": response.status_code,
+                "duration_ms": round((time.perf_counter() - started) * 1000, 1),
+            },
+        )
         response.headers[REQUEST_ID_HEADER] = rid
         if settings.demo:
             response.headers[DEMO_HEADER] = "demo"

@@ -45,13 +45,23 @@ def authenticate(conn: sqlite3.Connection, token: str | None) -> ReviewerIdentit
     return None if row is None else ReviewerIdentity(id=row["id"], name=row["name"])
 
 
+TOKEN_PATTERN = re.compile(r"^fpr_[A-Za-z0-9_-]{40,128}$")
+
+
 def add_reviewer(
-    conn: sqlite3.Connection, name: str, *, clock: Clock = utc_now
+    conn: sqlite3.Connection, name: str, *, clock: Clock = utc_now, token: str | None = None
 ) -> tuple[ReviewerIdentity, str]:
-    """Create a reviewer; returns the identity and the plaintext token, which is not stored."""
+    """Create a reviewer; returns the identity and the plaintext token, which is not stored.
+
+    `token` is normally generated here. The public demo passes an operator-chosen token so its
+    demo reviewer survives scheduled resets (ADR 0005); it must look like a generated one."""
     if not NAME_PATTERN.match(name):
         raise ReviewerError(f"invalid reviewer name {name!r}: use 1-64 of A-Z a-z 0-9 _ . : @ -")
-    token = TOKEN_PREFIX + secrets.token_urlsafe(32)
+    if token is not None and not TOKEN_PATTERN.match(token):
+        raise ReviewerError(
+            "a supplied reviewer token must be fpr_ plus 40-128 URL-safe characters"
+        )
+    token = token or TOKEN_PREFIX + secrets.token_urlsafe(32)
     now = iso(clock())
     with transaction(conn):
         if repo.get_reviewer_by_name(conn, name) is not None:

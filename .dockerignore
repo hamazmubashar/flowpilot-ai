@@ -1,0 +1,22 @@
+# Never send secrets, local state or tooling into an image build context.
+.env
+.env.*
+!.env.example
+**/.env
+var/
+.git/
+.venv/
+**/__pycache__/
+.pytest_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.claude/
+.DS_Store
+FlowPilot AI *
+deploy/
+n8n/
+tests/
+docs/
+data/
