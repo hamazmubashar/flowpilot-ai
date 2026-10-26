@@ -5,7 +5,7 @@ service is chosen or required.
 
 ## Context
 
-Everything ran on loopback (ADR 0001 decision 8, ADR 0003, CLAUDE.md). A client-facing portfolio
+Everything ran on loopback (ADR 0001 decision 8, ADR 0003). A client-facing portfolio
 demo must be reachable from the internet, without weakening the controls that keep real data and
 real messages out: synthetic data only, human approval, a simulated-only outbox, n8n isolated.
 

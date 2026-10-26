@@ -1,6 +1,6 @@
 # ADR 0004: M4 human approval with individually authenticated reviewers
 
-Status: proposed, 2026-10-22. M4 (`d465122`) first used one shared reviewer key; M4.1 replaces it
+Status: proposed, 2026-10-22. M4 (`0fcb2c6`) first used one shared reviewer key; M4.1 replaces it
 with per-reviewer tokens (decision 1).
 
 ## Context
