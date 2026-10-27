@@ -23,7 +23,7 @@ Inbound enquiries go cold while someone sorts through them by hand. The tempting
 
 FlowPilot takes a stricter line: **automate everything up to the decision, and nothing after it.** It's built for Northstar Digital Solutions, a fictional consultancy, and it handles a lead like this:
 
-1. **Intake.** A lead arrives through the API or an n8n webhook. It's validated, checked for duplicates, and safe to resend.
+1. **Intake.** A lead arrives through the API, an n8n webhook, or a CSV upload in the console. It's validated, checked for duplicates, and safe to resend.
 2. **Score and route.** Versioned rules score it and send it to partner review, the sales queue, or nurture.
 3. **Draft.** A local LLM writes a short qualification and a reply. If anything about the output looks wrong, a template takes over.
 4. **Approve.** A named reviewer approves or rejects that exact draft.
@@ -33,13 +33,15 @@ Everything uses synthetic data and free tools, and it runs on a laptop or a free
 
 ## Try the demo
 
-Open the [live demo](https://flowpilot-hamaz.duckdns.org) and click **Explore the demo**. You'll be signed in as the demo reviewer: look through the scored leads, read the AI drafts, and approve or reject one to see it land in the simulated outbox. The data resets every hour, so you can't break anything.
+Open the [live demo](https://flowpilot-hamaz.duckdns.org) and click **Explore the demo**. You'll be signed in as the demo reviewer: look through the scored leads, read the AI drafts, and approve or reject one to see it land in the simulated outbox. You can also upload a CSV of leads and watch each row go through the live n8n intake workflow. The data resets every hour, so you can't break anything.
 
 ## How it works
 
 ```mermaid
 flowchart LR
     F[Web form / webhook] -->|authenticated| N[n8n workflows]
+    CSV[CSV upload in console] -->|one execution per row| N
+    S[Schedule · every 5 min] --> N
     N -->|scoped API key| API[FastAPI]
     API --> R[Rules: validate, dedupe,<br/>score, route]
     R --> DB[(SQLite · append-only audit log)]
@@ -54,9 +56,9 @@ flowchart LR
 | Part | What it's responsible for |
 |---|---|
 | **FastAPI** | The only thing allowed to write to the database; every rule is enforced here |
-| **n8n** | Two workflows: webhook intake, and "prepare the next lead". They can qualify and draft, but can't approve or send. |
+| **n8n** | Lead intake (used by the webhook and the CSV import), plus "prepare the next lead", which the live demo also runs on a 5-minute schedule. Workflows can qualify and draft, but can't approve or send. |
 | **Local LLM** | Writes qualifications and drafts. Its output is advice only and never changes a lead's score or route. |
-| **Reviewer console** | Dashboard, leads, draft review with a confirmation step, and the simulated outbox |
+| **Reviewer console** | Dashboard, leads, CSV import, draft review with a confirmation step, and the simulated outbox |
 | **SQLite** | Checksummed migrations, plus triggers that keep the audit log append-only and reject outbox rows without an approved draft |
 
 ## Safeguards
@@ -67,7 +69,7 @@ I put the important rules in the database and the network, not only in the appli
 - **Every approval belongs to a named person.** Reviewers have individual tokens (only a hash is stored), and the database rejects approvals that don't come from an active reviewer.
 - **The AI has no authority.** Lead text is screened for prompt injection, including hidden zero-width and fullwidth-character tricks. Output is checked against a strict schema and rejected if it contains links, emails, phone numbers, prices or budget mentions, with a template used instead.
 - **n8n can't reach the internet.** It runs on an internal Docker network whose only exits are two relays with fixed destinations, and its API key only allows the exact calls its workflows need.
-- **The public demo is locked down.** TLS, per-route rate limits and security headers; only the console is exposed, the API stays internal, the model is switched off, and data resets hourly.
+- **The public demo is locked down.** HTTPS and security headers; the API stays internal, the model is switched off, and data resets hourly. Besides the console, only the n8n editor is public, behind n8n's owner login with two-factor authentication, and every n8n webhook path returns 404 from outside.
 - **Logs contain no personal data.** Request ID, route and timing only: no bodies, keys, tokens or lead details.
 
 Each of these decisions is written up in an [architecture decision record](docs/adr/).
@@ -79,7 +81,7 @@ Each of these decisions is written up in an [architecture decision record](docs/
 | Local model on 13 synthetic leads (`qwen2.5:3b`) | All 13 qualifications and all 13 drafts came from the model, with no fallbacks and no failed checks |
 | Speed (median, M1 MacBook Air) | 2.7 s per qualification, 3.2 s per draft |
 | Approvals during that run | None. The outbox stayed empty, confirming the model can't approve anything. |
-| Automated tests | 849 tests with an 80% coverage gate (currently 93%); any network call outside the machine fails the build |
+| Automated tests | 889 tests with an 80% coverage gate (currently 92%); any network call outside the machine fails the build |
 | n8n workflows | Checked automatically against an allowlist of nodes, URLs and API calls, and replayed against the real API in tests |
 
 Thirteen leads on one machine shows the pipeline works; it isn't a success rate you can expect for every lead or model. Drafts from a 3B model are fine as a starting point and still need a human to finish them, which is the point.
@@ -89,7 +91,7 @@ Thirteen leads on one machine shows the pipeline works; it isn't a success rate 
 | Area | Tools |
 |---|---|
 | Backend | FastAPI, Pydantic, SQLite, custom checksummed migrations |
-| Automation | n8n 2.44, pinned and hardened |
+| Automation | n8n 2.44, pinned and hardened, live in the demo |
 | AI | Ollama (`qwen2.5:3b`), JSON-schema output, injection screening, output checks |
 | Interface | Streamlit |
 | Operations | Docker Compose, nginx, uv, ruff, pytest, coverage |
@@ -118,6 +120,7 @@ The [technical guide](docs/TECHNICAL.md) covers the full API, n8n setup, turning
 - The output checks are strict and sometimes reject a perfectly good draft, which then falls back to a template.
 - The "prepare next lead" n8n workflow has only been run end to end once, against a test database.
 - Reviewer tokens don't expire, and in the demo everyone shares one reviewer.
+- The live demo shares a Caddy proxy with another project, which has no per-visitor rate limits. The bundled nginx setup in `deploy/public-demo/` does have them.
 - `qwen2.5:3b` is under a research licence, so this is a non-commercial portfolio project.
 
 The full list is in the [technical guide](docs/TECHNICAL.md#known-limitations-m1m3).

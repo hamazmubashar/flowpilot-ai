@@ -13,7 +13,8 @@ locally, and every outbound message requires human approval.
 > statically validated and run **once against a scratch database**. M4 human approval/rejection of
 > an exact draft version by individually authenticated reviewers, with a simulated-only outbox.
 > M5 an optional Streamlit console over the API: sign-in, Dashboard, Leads, Draft Responses,
-> Outbox (Simulated) and Settings. CSV import is deferred.
+> Outbox (Simulated) and Settings. M7 adds CSV import through n8n and a live n8n runtime in the
+> public demo (see the [ADR 0003 addendum](adr/0003-n8n-orchestration.md#addendum-2026-10-27-live-n8n-in-the-public-demo-m7)).
 
 ## What M1 does
 
@@ -109,11 +110,12 @@ logged or saved, and a page reload signs the reviewer out. Every page load re-ch
 | Dashboard | Totals, new leads per day, leads by source and status, recent leads, pending review, recent audit activity (`GET /leads`, `GET /leads/{id}/audit`) |
 | Leads | Server-side status/tier filters and paging; lead details; Add Lead form (`POST /leads`, with an idempotency key so retries cannot duplicate) |
 | Draft Responses | Queue of `drafted`/`awaiting_approval` leads, lead context, advisory assessment, draft versions; approve or reject the latest version after an explicit confirmation (`POST .../approval` with the reviewer's own token) |
+| Import CSV | Upload a CSV; each row runs through n8n's `flowpilot-lead-intake` workflow and the API decides created, duplicate or invalid (M7, needs the n8n add-on) |
 | Outbox (Simulated) | Read-only list of approved replies (`GET /outbox`); nothing is sent |
 | Settings | Read-only: confirmed reviewer, API address and `/health`, how reviewers are managed |
 
 Not available in the console: text search and source/date filters (the API filters leads by
-status and tier only), CSV import (deferred), reviewer management (CLI only), editing drafts or
+status and tier only), reviewer management (CLI only), editing drafts or
 outbox entries. UI tests use Streamlit's in-process `AppTest`; visual checks are manual.
 
 ```bash
@@ -143,13 +145,26 @@ latency, guard failures) on synthetic leads in the demo database; see the runboo
 ## Public demo deployment (ADR 0005)
 
 Host-independent container setup in `deploy/public-demo/`: nginx (TLS, rate limits) in front of
-the Streamlit console; the API and its demo database stay on internal networks; n8n is not
-deployed; synthetic data only, LLM off, scheduled refresh of the demo data. Visitors get one-click guest access as the demo reviewer
-([ADR 0006](adr/0006-demo-guest-access.md)); token sign-in stays available. Public binding needs
-an explicit double opt-in and works only for the demo database. Verified locally with a
-self-signed certificate; not deployed to any host. See
+the Streamlit console; the API and its demo database stay on internal networks; synthetic data
+only, LLM off, scheduled refresh of the demo data. Visitors get one-click guest access as the demo
+reviewer ([ADR 0006](adr/0006-demo-guest-access.md)); token sign-in stays available. Public
+binding needs an explicit double opt-in and works only for the demo database. See
 [docs/adr/0005-public-demo.md](adr/0005-public-demo.md) and the runbook's "Public demo
 deployment".
+
+Two optional add-ons describe the live deployment at <https://flowpilot-hamaz.duckdns.org>:
+
+- `compose.shared-caddy.yaml` runs behind another project's Caddy, which owns ports 80/443 and
+  terminates TLS. The bundled nginx is not started, so per-visitor rate limits do not apply.
+- `compose.n8n.yaml` runs n8n with the same pinned image and hardening as the local runtime. Its
+  editor sits behind n8n's owner login and 2FA; webhook paths are not public; the console's
+  Import CSV page and a 5-minute scheduled "prepare next lead" workflow use it inside Docker
+  ([ADR 0003 addendum](adr/0003-n8n-orchestration.md#addendum-2026-10-27-live-n8n-in-the-public-demo-m7)).
+
+```bash
+cd deploy/public-demo
+docker compose -f compose.yaml -f compose.shared-caddy.yaml -f compose.n8n.yaml up -d --build
+```
 
 ## Admin CLI
 
