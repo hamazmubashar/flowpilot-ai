@@ -17,6 +17,7 @@ from flowpilot.ui import (
     api,
     dashboard_page,
     drafts_page,
+    import_page,
     leads_page,
     outbox_page,
     settings_page,
@@ -26,10 +27,12 @@ from flowpilot.ui.theme import workspace_stylesheet
 
 PAGE_KEY = "fp_page"
 DASHBOARD, LEADS, DRAFTS, OUTBOX, SETTINGS = "dashboard", "leads", "drafts", "outbox", "settings"
+IMPORT = "import"
 # (page id or None when not built yet, label, icon class), in sidebar order.
 NAV = (
     (DASHBOARD, "Dashboard", "home"),
     (LEADS, "Leads", "leads"),
+    (IMPORT, "Import CSV", "import"),
     (DRAFTS, "Draft Responses", "draft"),
     (OUTBOX, "Outbox (Simulated)", "outbox"),
     (SETTINGS, "Settings", "settings"),
@@ -53,7 +56,7 @@ def _go(page: str) -> None:
 
 def current_page() -> str:
     page = st.session_state.get(PAGE_KEY, DASHBOARD)
-    return page if page in (DASHBOARD, LEADS, DRAFTS, OUTBOX, SETTINGS) else DASHBOARD
+    return page if page in (DASHBOARD, LEADS, IMPORT, DRAFTS, OUTBOX, SETTINGS) else DASHBOARD
 
 
 def sidebar(active: str) -> None:
@@ -166,6 +169,14 @@ def render(
             subtitle="Review AI-assisted replies before making a decision.",
             add_lead=False,
         )
+    elif page == IMPORT:
+        header(
+            reviewer,
+            on_sign_out,
+            title="Import CSV",
+            subtitle="Upload leads and run each one through the n8n intake workflow.",
+            add_lead=False,
+        )
     elif page == SETTINGS:
         header(
             reviewer,
@@ -201,6 +212,8 @@ def render(
         drafts_page.render(config, token, on_session_rejected=on_session_rejected)
     elif page == OUTBOX:
         outbox_page.render(config)
+    elif page == IMPORT:
+        import_page.render()
     elif page == SETTINGS:
         confirmed = check.reviewer or ReviewerIdentity(int(reviewer["id"]), str(reviewer["name"]))
         settings_page.render(config, confirmed)

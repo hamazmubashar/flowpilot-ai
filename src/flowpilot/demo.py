@@ -423,9 +423,33 @@ def _remove_db(path: Path) -> None:
         Path(f"{path}{suffix}").unlink(missing_ok=True)
 
 
+# The public demo shows a realistic pipeline (M7 A): the five scenarios plus deterministic
+# synthetic leads, 60 leads in total. Drafts wait for review on the scenario leads and on the
+# first few hot synthetic leads only, as a real team would draft for its best leads first.
+DEMO_SYNTHETIC_COUNT = 57
+DEMO_SYNTHETIC_SEED = 7
+DEMO_SYNTHETIC_DRAFTS = 6
+
+
+# Rotating budget/timeline profiles so the pipeline has a realistic hot/warm/cold mix; the raw
+# generator skews hot. Each profile only uses values the intake contract accepts.
+_DEMO_PROFILES = (
+    {},
+    {"budget_band": "10k_25k", "timeline": "3_6_months"},
+    {"budget_band": "under_10k", "timeline": "exploring", "company_size": "1-10"},
+)
+
+
+def demo_synthetic_leads() -> list[dict]:
+    """The synthetic part of the public demo, deterministic for a given code version."""
+    leads = generate_leads(DEMO_SYNTHETIC_COUNT, DEMO_SYNTHETIC_SEED)
+    return [{**lead, **_DEMO_PROFILES[i % len(_DEMO_PROFILES)]} for i, lead in enumerate(leads)]
+
+
 def build_snapshot(target: Path, api_key: str, reviewer_token: str) -> int:
     """A complete synthetic demo database at `target`: the demo reviewer with the operator's
-    token, the five scenarios, and a template draft (LLM off) for each scored lead."""
+    token, the five scenarios, DEMO_SYNTHETIC_COUNT synthetic leads, and template drafts (LLM
+    off) for the scenario leads and the first DEMO_SYNTHETIC_DRAFTS hot synthetic leads."""
     conn = connect(target)
     try:
         migrate(conn)
@@ -440,7 +464,21 @@ def build_snapshot(target: Path, api_key: str, reviewer_token: str) -> int:
         if not all(o.ok for o in outcomes):
             raise DemoError("demo scenarios did not produce their expected outcomes")
         created = [o.lead_id for o in outcomes if o.status == 201]
-        for lead_id in created:
+        to_draft = list(created)
+        for index, payload in enumerate(demo_synthetic_leads()):
+            response = api.post(
+                "/leads",
+                json=payload,
+                headers={"X-API-Key": api_key, "Idempotency-Key": f"demo-lead-{index}"},
+            )
+            if response.status_code != 201:
+                raise DemoError(f"synthetic lead {index} returned {response.status_code}")
+            lead = response.json()["lead"]
+            created.append(int(lead["id"]))
+            hot = (lead.get("score") or {}).get("tier") == "hot"
+            if hot and len(to_draft) < len(outcomes) - 2 + DEMO_SYNTHETIC_DRAFTS:
+                to_draft.append(int(lead["id"]))
+        for lead_id in to_draft:
             response = api.post(
                 f"/leads/{lead_id}/drafts",
                 headers={"X-API-Key": api_key, "Idempotency-Key": f"demo-draft-{lead_id}"},

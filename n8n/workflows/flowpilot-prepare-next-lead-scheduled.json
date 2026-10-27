@@ -1,0 +1,326 @@
+{
+  "name": "flowpilot-prepare-next-lead-scheduled",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 5
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "id": "9c3d1e7a-5b2f-4a61-8e0d-7f4a2c6b9e01",
+      "name": "Every 5 minutes",
+      "notes": "Public demo (M7 D): prepares one scored lead every 5 minutes. Drafts still wait for a human reviewer; nothing is approved or sent."
+    },
+    {
+      "parameters": {
+        "url": "http://host.docker.internal:8000/leads",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "status",
+              "value": "scored"
+            },
+            {
+              "name": "limit",
+              "value": "1"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Actor",
+              "value": "n8n:prepare-next-lead"
+            },
+            {
+              "name": "X-Request-ID",
+              "value": "=n8n-{{ $execution.id }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        768,
+        464
+      ],
+      "id": "c457f8e0-b0fe-5f45-a650-c5c6de3a1761",
+      "name": "Next scored lead",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "sEONbS2q0Mk8f9XG",
+          "name": "FlowPilot API"
+        }
+      },
+      "notes": "Lowest-ID lead in status 'scored' (API orders by id). Read-only."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "6f0c2a8e-1b7d-4c55-9a3e-0d4b8f1e2b01",
+              "leftValue": "={{ $json.total }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        992,
+        464
+      ],
+      "id": "65cbc09e-ee92-5d00-8a44-2a9775311769",
+      "name": "Queue empty?"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1216,
+        336
+      ],
+      "id": "dded7de5-0f84-57f0-b39d-57089c0b1c14",
+      "name": "Nothing to prepare"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "6f0c2a8e-1b7d-4c55-9a3e-0d4b8f1e2b02",
+              "name": "lead_id",
+              "value": "={{ $json.items[0].id }}",
+              "type": "number"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1216,
+        560
+      ],
+      "id": "560b3b5d-5590-522d-b247-27aef3d08d56",
+      "name": "Pick lead"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=http://host.docker.internal:8000/leads/{{ $('Pick lead').item.json.lead_id }}/qualification",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Idempotency-Key",
+              "value": "=n8n:qualify:lead:{{ $('Pick lead').item.json.lead_id }}:v1"
+            },
+            {
+              "name": "X-Actor",
+              "value": "n8n:prepare-next-lead"
+            },
+            {
+              "name": "X-Request-ID",
+              "value": "=n8n-{{ $execution.id }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 200000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        1440,
+        560
+      ],
+      "id": "146e86c1-6367-5e5a-9e8d-4fb68f3f4fc6",
+      "name": "Qualify",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "sEONbS2q0Mk8f9XG",
+          "name": "FlowPilot API"
+        }
+      },
+      "notes": "Advisory only; no request body. Per-lead key makes retries and reruns replay."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=http://host.docker.internal:8000/leads/{{ $('Pick lead').item.json.lead_id }}/drafts",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Idempotency-Key",
+              "value": "=n8n:draft:lead:{{ $('Pick lead').item.json.lead_id }}:v1"
+            },
+            {
+              "name": "X-Actor",
+              "value": "n8n:prepare-next-lead"
+            },
+            {
+              "name": "X-Request-ID",
+              "value": "=n8n-{{ $execution.id }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 200000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        1664,
+        560
+      ],
+      "id": "1f8c6b77-94eb-526d-8a9b-7c8cf4e58dd9",
+      "name": "Draft",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "sEONbS2q0Mk8f9XG",
+          "name": "FlowPilot API"
+        }
+      },
+      "notes": "No request body. Moves the lead out of the scored queue; 409 if its status changed."
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1888,
+        560
+      ],
+      "id": "cbf262b2-a307-58ef-a8e6-2ca426892fa5",
+      "name": "Awaiting human approval",
+      "notes": "Stops here. Approval and the simulated outbox are human-only (M4)."
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Next scored lead": {
+      "main": [
+        [
+          {
+            "node": "Queue empty?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Queue empty?": {
+      "main": [
+        [
+          {
+            "node": "Nothing to prepare",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Pick lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pick lead": {
+      "main": [
+        [
+          {
+            "node": "Qualify",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Qualify": {
+      "main": [
+        [
+          {
+            "node": "Draft",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Draft": {
+      "main": [
+        [
+          {
+            "node": "Awaiting human approval",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Every 5 minutes": {
+      "main": [
+        [
+          {
+            "node": "Next scored lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "ee41bcf1-8fba-424c-ad37-d2762e0a0bdc",
+  "id": "RwbQm58n1ciLbNl5",
+  "tags": []
+}
