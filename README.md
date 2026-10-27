@@ -1,137 +1,129 @@
 <div align="center">
 
-# ✈️ FlowPilot AI
+# FlowPilot AI
 
-### AI-assisted lead-intake automation where humans keep the final say
+**Lead-intake automation for a B2B consultancy. AI does the busywork; a person makes every decision.**
 
 [![Live Demo](https://img.shields.io/badge/Live_Demo-Online-2EA44F?style=for-the-badge)](https://flowpilot-hamaz.duckdns.org)
 [![Python](https://img.shields.io/badge/Python-3.12-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=for-the-badge&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
-[![n8n](https://img.shields.io/badge/n8n-Orchestration-EA4B71?style=for-the-badge&logo=n8n&logoColor=white)](https://n8n.io/)
+[![n8n](https://img.shields.io/badge/n8n-Workflows-EA4B71?style=for-the-badge&logo=n8n&logoColor=white)](https://n8n.io/)
 [![Ollama](https://img.shields.io/badge/Ollama-Local_LLM-000000?style=for-the-badge)](https://ollama.com)
 [![License](https://img.shields.io/badge/License-MIT-yellow?style=for-the-badge)](LICENSE)
 
-**[🚀 Live Demo](https://flowpilot-hamaz.duckdns.org)** (no sign-up needed) · [How it works](#-how-it-works) · [Safety by design](#-safety-by-design) · [Results](#-results) · [Technical guide](docs/TECHNICAL.md)
+[**Try the live demo**](https://flowpilot-hamaz.duckdns.org) (one click, no sign-up) · [How it works](#how-it-works) · [Safeguards](#safeguards) · [Results](#results) · [Technical guide](docs/TECHNICAL.md)
 
 </div>
 
 ---
 
-## 🎯 The problem
+## The problem
 
-A B2B consultancy gets inbound enquiries from web forms and email. Leads go cold while someone triages them by hand, and the obvious fix — "let an AI reply automatically" — is how companies end up emailing a hallucinated price to a prospect.
+Inbound enquiries go cold while someone sorts through them by hand. The tempting fix is to let an AI reply automatically, and that's how a company ends up emailing a prospect a price its model made up.
 
-FlowPilot AI automates everything **up to** the decision and nothing past it. Built for *Northstar Digital Solutions*, a fictional consultancy:
+FlowPilot takes a stricter line: **automate everything up to the decision, and nothing after it.** It's built for Northstar Digital Solutions, a fictional consultancy, and it handles a lead like this:
 
-- **Intake** — leads arrive via API or an authenticated n8n webhook; validated, de-duplicated and idempotent.
-- **Score & route** — versioned deterministic rules send each lead to `partner_review`, `sales_queue` or `nurture`.
-- **Draft** — a local LLM writes an advisory qualification and a reply draft, with a deterministic fallback.
-- **Approve** — a named human reviewer approves or rejects the exact draft version.
-- **"Send"** — approval writes to a **simulated** outbox. Nothing is ever emailed.
+1. **Intake.** A lead arrives through the API or an n8n webhook. It's validated, checked for duplicates, and safe to resend.
+2. **Score and route.** Versioned rules score it and send it to partner review, the sales queue, or nurture.
+3. **Draft.** A local LLM writes a short qualification and a reply. If anything about the output looks wrong, a template takes over.
+4. **Approve.** A named reviewer approves or rejects that exact draft.
+5. **"Send".** An approved reply goes to a simulated outbox. Nothing is ever emailed.
 
-Synthetic data only, zero paid APIs, runs locally or on a free-tier server.
+Everything uses synthetic data and free tools, and it runs on a laptop or a free cloud server.
 
----
+## Try the demo
 
-## 🔄 How it works
+Open the [live demo](https://flowpilot-hamaz.duckdns.org) and click **Explore the demo**. You'll be signed in as the demo reviewer: look through the scored leads, read the AI drafts, and approve or reject one to see it land in the simulated outbox. The data resets every hour, so you can't break anything.
+
+## How it works
 
 ```mermaid
 flowchart LR
     F[Web form / webhook] -->|authenticated| N[n8n workflows]
-    N -->|X-API-Key, idempotency keys| API[FastAPI]
-    API --> R[Rules engine<br/>validate · dedupe · score · route]
-    R --> DB[(SQLite<br/>append-only audit)]
-    API -->|advisory only| L[Local LLM<br/>Ollama qwen2.5:3b]
-    L -->|guards fail?| FB[Deterministic<br/>template fallback]
-    API --> C[Streamlit reviewer console]
-    C -->|named reviewer token| AP{Human approval}
-    AP -->|approved| O[Simulated outbox]
-    AP -->|rejected| X[Closed]
+    N -->|scoped API key| API[FastAPI]
+    API --> R[Rules: validate, dedupe,<br/>score, route]
+    R --> DB[(SQLite · append-only audit log)]
+    API -->|advisory only| L[Local LLM · Ollama]
+    L -->|output fails checks| FB[Template fallback]
+    API --> C[Reviewer console · Streamlit]
+    C -->|reviewer's own token| AP{Human decision}
+    AP -->|approve| O[Simulated outbox]
+    AP -->|reject| X[Closed]
 ```
 
-| Component | Role |
+| Part | What it's responsible for |
 |---|---|
-| **FastAPI** | The only writer to the database; enforces every rule |
-| **n8n** (2 workflows) | Webhook intake and "prepare next lead" orchestration — can qualify and draft, can never approve or send |
-| **Local LLM** | Qualification and reply drafts; output is advisory and never changes score, tier or route |
-| **Reviewer console** | Streamlit: dashboard, leads, draft review with explicit confirmation, simulated outbox |
-| **SQLite** | Checksummed migrations, triggers that make the audit log append-only and block outbox rows without an approved draft |
+| **FastAPI** | The only thing allowed to write to the database; every rule is enforced here |
+| **n8n** | Two workflows: webhook intake, and "prepare the next lead". They can qualify and draft, but can't approve or send. |
+| **Local LLM** | Writes qualifications and drafts. Its output is advice only and never changes a lead's score or route. |
+| **Reviewer console** | Dashboard, leads, draft review with a confirmation step, and the simulated outbox |
+| **SQLite** | Checksummed migrations, plus triggers that keep the audit log append-only and reject outbox rows without an approved draft |
 
----
+## Safeguards
 
-## 🛡️ Safety by design
+I put the important rules in the database and the network, not only in the application code, so a bug in one place can't quietly bypass them.
 
-The guardrails live in the **database and network**, not just in application code:
+- **There's no way to send a real message.** The outbox's only channel is "simulated", and a database trigger refuses any entry without a human-approved draft.
+- **Every approval belongs to a named person.** Reviewers have individual tokens (only a hash is stored), and the database rejects approvals that don't come from an active reviewer.
+- **The AI has no authority.** Lead text is screened for prompt injection, including hidden zero-width and fullwidth-character tricks. Output is checked against a strict schema and rejected if it contains links, emails, phone numbers, prices or budget mentions, with a template used instead.
+- **n8n can't reach the internet.** It runs on an internal Docker network whose only exits are two relays with fixed destinations, and its API key only allows the exact calls its workflows need.
+- **The public demo is locked down.** TLS, per-route rate limits and security headers; only the console is exposed, the API stays internal, the model is switched off, and data resets hourly.
+- **Logs contain no personal data.** Request ID, route and timing only: no bodies, keys, tokens or lead details.
 
-- **No path to a real send.** The only outbox channel is `simulated`; a trigger refuses outbox rows without a human-approved draft.
-- **Humans are authenticated individually.** Approvals require a per-reviewer token (only its SHA-256 is stored); a trigger refuses approvals without an active reviewer.
-- **LLM output has no authority.** Inputs are screened for prompt injection (after Unicode normalization, so zero-width and fullwidth tricks fail); outputs are schema-validated and guarded — no links, emails, phone numbers, prices or budget references — with automatic fallback on any failure.
-- **n8n is network-isolated.** It sits on an internal Docker network with no route out; its only exits are two fixed-destination relays. Its API key is scoped to exactly the calls its workflows need.
-- **Public demo is locked down.** TLS, rate limits per traffic class, security headers; only the console is exposed; the API stays on an internal network; the model is off and data refreshes hourly.
-- **Privacy-safe logging.** JSON logs with request ID, route and timing only — no bodies, keys, tokens or lead data.
+Each of these decisions is written up in an [architecture decision record](docs/adr/).
 
----
+## Results
 
-## 📊 Results
-
-| What was measured | Result |
+| What I measured | Result |
 |---|---|
-| Local LLM on 13 synthetic leads (`qwen2.5:3b`, prompt v2026.10-p3) | Qualification **13/13** and drafts **13/13** from the model — no fallbacks, no guard failures |
-| Latency p50 (M1 MacBook Air) | Qualification 2.7 s · draft 3.2 s |
-| Approvals / outbox during eval | Stayed empty (verified) — the model cannot approve |
-| Test suite | 42 test modules, coverage gate ≥ 80%, all non-loopback network calls blocked |
-| n8n workflows | Statically validated (node allowlist, fixed URLs, approved method/path pairs, idempotency keys) and contract-tested against FastAPI |
+| Local model on 13 synthetic leads (`qwen2.5:3b`) | All 13 qualifications and all 13 drafts came from the model, with no fallbacks and no failed checks |
+| Speed (median, M1 MacBook Air) | 2.7 s per qualification, 3.2 s per draft |
+| Approvals during that run | None. The outbox stayed empty, confirming the model can't approve anything. |
+| Automated tests | 849 tests with an 80% coverage gate (currently 93%); any network call outside the machine fails the build |
+| n8n workflows | Checked automatically against an allowlist of nodes, URLs and API calls, and replayed against the real API in tests |
 
-> **Honest read:** 13 leads on one machine shows the pipeline works — it is not a measured success rate for other leads, models or hardware. Drafts from a 3B model are generic starting points for human review.
+Thirteen leads on one machine shows the pipeline works; it isn't a success rate you can expect for every lead or model. Drafts from a 3B model are fine as a starting point and still need a human to finish them, which is the point.
 
----
+## Tech stack
 
-## 🧰 Tech stack
-
-| Layer | Tools |
+| Area | Tools |
 |---|---|
-| Backend | FastAPI, Pydantic, SQLite (WAL), custom checksummed migrations |
-| Automation | n8n 2.44 (pinned by digest, hardened, 9-node allowlist) |
-| AI | Ollama (`qwen2.5:3b`), structured JSON output, injection pre-screen, output guards |
-| UI | Streamlit reviewer console |
-| Ops | Docker Compose, nginx (TLS, rate limiting), uv, ruff, pytest + coverage |
-| Docs | 5 Architecture Decision Records, operations & recovery runbook |
+| Backend | FastAPI, Pydantic, SQLite, custom checksummed migrations |
+| Automation | n8n 2.44, pinned and hardened |
+| AI | Ollama (`qwen2.5:3b`), JSON-schema output, injection screening, output checks |
+| Interface | Streamlit |
+| Operations | Docker Compose, nginx, uv, ruff, pytest, coverage |
+| Documentation | 6 architecture decision records and an operations runbook |
 
----
-
-## ▶️ Run it locally
+## Run it locally
 
 ```bash
 git clone https://github.com/hamazmubashar/flowpilot-ai.git
 cd flowpilot-ai
 uv sync
 cp .env.example .env
-uv run flowpilot-admin gen-key        # paste into FLOWPILOT_API_KEY in .env
+uv run flowpilot-admin gen-key        # paste the key into FLOWPILOT_API_KEY in .env
 uv run flowpilot-admin migrate
 uv run flowpilot-admin seed           # 60 synthetic leads
-uv run flowpilot-api                  # http://127.0.0.1:8000
+uv run flowpilot-api                  # API at http://127.0.0.1:8000
 uv run --group ui streamlit run src/flowpilot/ui/app.py   # reviewer console
 ```
 
-API reference, n8n setup, LLM configuration, admin CLI and public-demo deployment: **[docs/TECHNICAL.md](docs/TECHNICAL.md)**. Design decisions: [docs/adr/](docs/adr/). Operations: [docs/runbook.md](docs/runbook.md).
+The [technical guide](docs/TECHNICAL.md) covers the full API, n8n setup, turning on the local model, the admin CLI and deploying the public demo. Day-to-day operations and recovery are in the [runbook](docs/runbook.md).
 
----
+## Limitations
 
-## ⚠️ Known limitations
+- SQLite allows one writer, so the API runs as a single process.
+- Prompt-injection screening is pattern-based and will miss new phrasings. The real protection is that the model's output can't do anything on its own.
+- The output checks are strict and sometimes reject a perfectly good draft, which then falls back to a template.
+- The "prepare next lead" n8n workflow has only been run end to end once, against a test database.
+- Reviewer tokens don't expire, and in the demo everyone shares one reviewer.
+- `qwen2.5:3b` is under a research licence, so this is a non-commercial portfolio project.
 
-- SQLite means a single writer process; no horizontal scaling.
-- The injection pre-screen is heuristic and will miss novel phrasings; the real defence is that model output has no authority.
-- Output guards are strict and can reject legitimate drafts (they fall back to a template).
-- The n8n "prepare next lead" workflow has been run end-to-end once against a scratch database.
-- Reviewer tokens don't expire; the public demo token is shared by design.
-- `qwen2.5:3b` is under a research licence — this is a non-commercial portfolio demo.
+The full list is in the [technical guide](docs/TECHNICAL.md#known-limitations-m1m3).
 
-Full list: [docs/TECHNICAL.md](docs/TECHNICAL.md#known-limitations-m1m3).
+## Author
 
----
+**Hamaz Mubashar** · [LinkedIn](https://www.linkedin.com/in/hamazmubashar) · [GitHub](https://github.com/hamazmubashar) · Related project: [LeadFlow AI](https://leadflow-hamaz.duckdns.org)
 
-## 📄 License
-
-Code: MIT ([LICENSE](LICENSE)). n8n is used under its Sustainable Use License and is pulled at runtime, not bundled.
-
-**Built by [Hamaz Mubashar](https://www.linkedin.com/in/hamazmubashar)** · Related: [LeadFlow AI](https://leadflow-hamaz.duckdns.org) · [More projects](https://github.com/hamazmubashar)
+Code is released under the [MIT License](LICENSE). n8n is used under its Sustainable Use License; it's pulled at runtime, not bundled.
