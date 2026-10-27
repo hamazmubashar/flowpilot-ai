@@ -11,7 +11,7 @@
 [![Ollama](https://img.shields.io/badge/Ollama-Local_LLM-000000?style=for-the-badge)](https://ollama.com)
 [![License](https://img.shields.io/badge/License-MIT-yellow?style=for-the-badge)](LICENSE)
 
-**[🚀 Live Demo](https://flowpilot-hamaz.duckdns.org)** (reviewer token on request) · [How it works](#-how-it-works) · [Safety by design](#-safety-by-design) · [Results](#-results) · [Technical guide](docs/TECHNICAL.md)
+**[🚀 Live Demo](https://flowpilot-hamaz.duckdns.org)** (no sign-up needed) · [How it works](#-how-it-works) · [Safety by design](#-safety-by-design) · [Results](#-results) · [Technical guide](docs/TECHNICAL.md)
 
 </div>
 

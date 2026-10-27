@@ -367,7 +367,11 @@ def test_services_are_hardened_and_public_mode_is_explicit() -> None:
     console = services["console"]["environment"]
     assert console["FLOWPILOT_API_URL"] == "http://api:8000"
     assert console["FLOWPILOT_API_KEY"].startswith("${FLOWPILOT_CONSOLE_API_KEY:?")
-    assert "FLOWPILOT_DEMO_REVIEWER_TOKEN" not in console
+    # ADR 0006: the console holds the shared demo token for one-click guest access, never the
+    # admin key or the n8n key.
+    assert console["FLOWPILOT_DEMO_REVIEWER_TOKEN"].startswith("${FLOWPILOT_DEMO_REVIEWER_TOKEN:?")
+    assert not any("FLOWPILOT_N8N" in key for key in console)
+    assert "FLOWPILOT_CONSOLE_API_KEY" not in console  # it is passed as FLOWPILOT_API_KEY
     secrets = ("FLOWPILOT_API_KEY", "FLOWPILOT_CONSOLE_API_KEY", "FLOWPILOT_DEMO_REVIEWER_TOKEN")
     for secret in secrets:
         assert api["environment"][secret].startswith(f"${{{secret}:?")  # required, never defaulted

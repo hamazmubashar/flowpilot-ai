@@ -110,6 +110,7 @@
         "FLOWPILOT_PUBLIC_DEMO": "1",
         "FLOWPILOT_API_URL": "http://api:8000",
         "FLOWPILOT_API_KEY": "${FLOWPILOT_CONSOLE_API_KEY:?Set FLOWPILOT_CONSOLE_API_KEY in deploy/public-demo/.env (see env.example)}",
+        "FLOWPILOT_DEMO_REVIEWER_TOKEN": "${FLOWPILOT_DEMO_REVIEWER_TOKEN:?Set FLOWPILOT_DEMO_REVIEWER_TOKEN in deploy/public-demo/.env (see env.example)}",
         "STREAMLIT_SERVER_ADDRESS": "0.0.0.0",
         "STREAMLIT_BROWSER_GATHER_USAGE_STATS": "false"
       },

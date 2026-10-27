@@ -343,6 +343,32 @@ header[data-testid="stHeader"] { background: transparent; }
 .st-key-fp_signin [data-testid="stFormSubmitButton"] button:disabled {
   filter: saturate(.55) brightness(1.12); box-shadow: none; cursor: progress; transform: none;
 }
+/* Public demo (ADR 0006): one-click guest access is the main action; token sign-in is secondary. */
+.st-key-fp_guest button {
+  width: 100%; height: 60px; border-radius: 12px; border: 1px solid var(--fp-signal-deep);
+  background: linear-gradient(180deg, #2546CC, var(--fp-signal-deep));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .18), 0 14px 30px -14px rgba(31, 63, 191, .75);
+  transition: filter .15s ease, box-shadow .15s ease, transform .06s ease;
+}
+.st-key-fp_guest button p, .st-key-fp_guest button span {
+  font-size: 1.12rem; font-weight: 600; color: #FFFFFF;
+}
+.st-key-fp_guest button:hover { filter: brightness(1.08); }
+.st-key-fp_guest button:active { transform: translateY(1px); }
+.st-key-fp_guest button:focus-visible {
+  outline: none; box-shadow: 0 0 0 4px rgba(31, 63, 191, .3);
+}
+.st-key-fp_token_secondary { margin-top: 8px; }
+.st-key-fp_token_secondary [data-testid="stFormSubmitButton"] button {
+  background: var(--fp-field); border: 1px solid var(--fp-field-line); box-shadow: none;
+}
+.st-key-fp_token_secondary [data-testid="stFormSubmitButton"] button p,
+.st-key-fp_token_secondary [data-testid="stFormSubmitButton"] button span {
+  color: var(--fp-ink);
+}
+.st-key-fp_token_secondary [data-testid="stFormSubmitButton"] button:hover {
+  border-color: var(--fp-signal); filter: none; box-shadow: none;
+}
 .st-key-fp_signin [data-testid="stAlert"] { margin-top: 18px; }
 .st-key-fp_signin [data-testid="stAlert"] > div { border-radius: 12px; }
 .fp-note {

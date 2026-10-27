@@ -152,3 +152,84 @@ def test_configuration_error_is_reported_without_the_key(monkeypatch: pytest.Mon
     assert "FLOWPILOT_API_URL" in at.error[0].value
     assert API_KEY not in rendered(at)
     assert len(at.text_input) == 0
+
+
+# --- public demo guest access (ADR 0006) ---------------------------------------------------------
+
+DEMO_TOKEN = "fpr_" + "PublicDemoGuest_" * 3
+
+
+@pytest.fixture
+def public_demo(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FLOWPILOT_PUBLIC_DEMO", "1")
+    monkeypatch.setenv("FLOWPILOT_DEMO_REVIEWER_TOKEN", DEMO_TOKEN)
+
+
+def test_guest_access_is_never_offered_outside_the_public_demo(
+    monkeypatch: pytest.MonkeyPatch, calls: list[str]
+) -> None:
+    monkeypatch.delenv("FLOWPILOT_PUBLIC_DEMO", raising=False)
+    monkeypatch.setenv("FLOWPILOT_DEMO_REVIEWER_TOKEN", DEMO_TOKEN)  # present but must be ignored
+    at = AppTest.from_file(APP).run()
+    assert not at.exception
+    assert len(at.button) == 1  # only "Sign in"
+    page = rendered(at)
+    assert "Explore the demo" not in page
+    assert "Welcome back" in page
+
+
+def test_guest_button_signs_in_without_rendering_the_token(
+    monkeypatch: pytest.MonkeyPatch, calls: list[str], public_demo: None
+) -> None:
+    fake_verify(monkeypatch, calls, LoginResult(LoginOutcome.OK, ReviewerIdentity(3, "demo")))
+    at = AppTest.from_file(APP).run()
+    assert not at.exception
+    page = rendered(at)
+    assert "Try the live demo" in page
+    assert DEMO_TOKEN not in page
+    assert len(at.text_input) == 1  # token sign-in stays available
+
+    at.button(key="fp_guest").click()
+    at.run()
+
+    assert not at.exception
+    assert calls == [DEMO_TOKEN, DEMO_TOKEN]  # guest sign-in, then the workspace re-check
+    assert at.session_state["fp_reviewer"] == {"id": 3, "name": "demo"}
+    page = rendered(at)
+    assert "<h1>Dashboard</h1>" in page
+    assert DEMO_TOKEN not in page
+
+
+@pytest.mark.parametrize(
+    ("outcome", "message"),
+    [
+        (LoginOutcome.INVALID_TOKEN, "refreshing its sample data"),
+        (LoginOutcome.API_UNAVAILABLE, "not reachable"),
+    ],
+)
+def test_guest_failure_explains_without_leaking(
+    monkeypatch: pytest.MonkeyPatch,
+    calls: list[str],
+    public_demo: None,
+    outcome: LoginOutcome,
+    message: str,
+) -> None:
+    fake_verify(monkeypatch, calls, LoginResult(outcome))
+    at = AppTest.from_file(APP).run()
+    at.button(key="fp_guest").click()
+    at.run()
+    assert not at.exception
+    assert message in at.error[0].value
+    assert "fp_reviewer_token" not in at.session_state
+    assert DEMO_TOKEN not in rendered(at)
+
+
+def test_public_demo_without_a_token_falls_back_to_sign_in(
+    monkeypatch: pytest.MonkeyPatch, calls: list[str]
+) -> None:
+    monkeypatch.setenv("FLOWPILOT_PUBLIC_DEMO", "1")
+    monkeypatch.setenv("FLOWPILOT_DEMO_REVIEWER_TOKEN", "   ")
+    at = AppTest.from_file(APP).run()
+    assert not at.exception
+    assert len(at.button) == 1
+    assert "Explore the demo" not in rendered(at)

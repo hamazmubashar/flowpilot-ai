@@ -65,7 +65,8 @@ of this deployment.
    docker compose -f deploy/public-demo/compose.yaml --env-file deploy/public-demo/.env up -d --build
    ```
 
-3. Smoke test: `https://<host>/` shows the sign-in page; sign in with the demo reviewer token;
+3. Smoke test: `https://<host>/` shows the sign-in page with an **Explore the demo** button
+   (ADR 0006); click it, or sign in with the demo reviewer token;
    Leads shows three leads and Draft Responses three drafts; an approval appears in Outbox
    (Simulated) as "not sent". `curl -sI http://<host>/` redirects to HTTPS; repeated fast
    requests get `429`. The API port is not published (`docker compose ... ps` shows ports only

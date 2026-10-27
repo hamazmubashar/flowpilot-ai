@@ -144,7 +144,8 @@ latency, guard failures) on synthetic leads in the demo database; see the runboo
 
 Host-independent container setup in `deploy/public-demo/`: nginx (TLS, rate limits) in front of
 the Streamlit console; the API and its demo database stay on internal networks; n8n is not
-deployed; synthetic data only, LLM off, scheduled refresh of the demo data. Public binding needs
+deployed; synthetic data only, LLM off, scheduled refresh of the demo data. Visitors get one-click guest access as the demo reviewer
+([ADR 0006](adr/0006-demo-guest-access.md)); token sign-in stays available. Public binding needs
 an explicit double opt-in and works only for the demo database. Verified locally with a
 self-signed certificate; not deployed to any host. See
 [docs/adr/0005-public-demo.md](adr/0005-public-demo.md) and the runbook's "Public demo

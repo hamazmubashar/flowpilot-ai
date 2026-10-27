@@ -25,6 +25,10 @@ TOKEN_KEY = "fp_reviewer_token"  # noqa: S105
 TOKEN_INPUT_KEY = "fp_token_input"  # noqa: S105
 LOGIN_ERROR_KEY = "fp_login_error"
 EMPTY = "empty"
+GUEST_UNAVAILABLE = "guest_unavailable"
+# Public demo only (ADR 0006): the shared demo reviewer token, which is public by design (ADR 0005
+# decision 6). Never read outside FLOWPILOT_PUBLIC_DEMO=1, never rendered or logged.
+GUEST_TOKEN_ENV = "FLOWPILOT_DEMO_REVIEWER_TOKEN"  # noqa: S105 - variable name, not a secret
 
 ERRORS = {
     LoginOutcome.INVALID_TOKEN: (
@@ -39,7 +43,19 @@ ERRORS = {
         "The FlowPilot API is not reachable. Make sure it is running, then try again."
     ),
     LoginOutcome.UNEXPECTED: "The FlowPilot API returned an unexpected response. Try again.",
+    GUEST_UNAVAILABLE: (
+        "The demo is refreshing its sample data right now. Give it a minute and try again."
+    ),
 }
+
+
+def guest_token() -> str | None:
+    """The demo reviewer token, offered as one-click guest access. Exists only in the explicit
+    public demo; a normal console never offers guest access whatever its environment holds."""
+    if os.environ.get("FLOWPILOT_PUBLIC_DEMO") != "1":
+        return None
+    token = os.environ.get(GUEST_TOKEN_ENV, "").strip()
+    return token or None
 
 
 def runtime_is_local() -> bool:
@@ -118,12 +134,59 @@ def submit_login(config: UIConfig) -> None:
         st.session_state[LOGIN_ERROR_KEY] = result.outcome
 
 
-def login_form(config: UIConfig) -> None:
+def start_guest(config: UIConfig) -> None:
+    """Button callback: sign in as the demo reviewer with the server-side demo token. The token
+    never reaches the browser; the session holds it exactly as after a typed sign-in."""
+    st.session_state.pop(LOGIN_ERROR_KEY, None)
+    token = guest_token()
+    if token is None:
+        st.session_state[LOGIN_ERROR_KEY] = GUEST_UNAVAILABLE
+        return
+    result = verify_reviewer(config, token)
+    if result.outcome is LoginOutcome.OK and result.reviewer is not None:
+        st.session_state[TOKEN_KEY] = token
+        st.session_state[REVIEWER_KEY] = {"id": result.reviewer.id, "name": result.reviewer.name}
+    elif result.outcome is LoginOutcome.INVALID_TOKEN:
+        st.session_state[LOGIN_ERROR_KEY] = GUEST_UNAVAILABLE
+    else:
+        st.session_state[LOGIN_ERROR_KEY] = result.outcome
+
+
+def guest_entry(config: UIConfig) -> None:
     st.html(
-        '<div class="fp-welcome"><h1>Welcome back</h1>'
-        "<p>Sign in to your reviewer workspace</p></div>"
+        '<div class="fp-welcome"><h1>Try the live demo</h1>'
+        "<p>No sign-up needed. You'll review leads as the demo reviewer.</p></div>"
     )
-    with st.form("reviewer_login", border=False):
+    st.button(
+        "Explore the demo",
+        key="fp_guest",
+        type="primary",
+        icon=":material/arrow_forward:",
+        icon_position="right",
+        width="stretch",
+        on_click=start_guest,
+        args=(config,),
+    )
+    st.html(
+        '<p class="fp-note">Sample data only. It resets every hour, and approving a draft '
+        "only writes to a simulated outbox.</p>"
+        '<p class="fp-note">Have a reviewer token? Sign in below.</p>'
+    )
+
+
+def login_form(config: UIConfig) -> None:
+    guest = guest_token() is not None
+    if guest:
+        guest_entry(config)
+    else:
+        st.html(
+            '<div class="fp-welcome"><h1>Welcome back</h1>'
+            "<p>Sign in to your reviewer workspace</p></div>"
+        )
+    with (
+        st.container(key="fp_token_secondary" if guest else "fp_token_primary"),
+        st.form("reviewer_login", border=False),
+    ):
         st.text_input(
             "Reviewer token",
             key=TOKEN_INPUT_KEY,
@@ -133,7 +196,7 @@ def login_form(config: UIConfig) -> None:
         )
         st.form_submit_button(
             "Sign in",
-            type="primary",
+            type="secondary" if guest else "primary",
             icon=":material/arrow_forward:",
             icon_position="right",
             width="stretch",
