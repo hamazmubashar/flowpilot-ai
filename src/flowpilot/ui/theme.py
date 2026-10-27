@@ -563,6 +563,7 @@ NAV_DRAFT = _icon(
     _NAV_STROKE,
 )
 NAV_OUTBOX = _icon("<path d='M21 3 3 10.5l7 2.5 2.5 7z'/><path d='m10 13 5-5'/>", _NAV_STROKE)
+NAV_IMPORT = _icon("<path d='M12 3v12'/><path d='m7 10 5 5 5-5'/><path d='M5 21h14'/>", _NAV_STROKE)
 NAV_SETTINGS = _icon(
     "<path d='M4 7h9M17 7h3M4 17h3M11 17h9'/><circle cx='15' cy='7' r='2'/>"
     "<circle cx='9' cy='17' r='2'/>",
@@ -640,6 +641,7 @@ section[data-testid="stSidebar"] [data-testid="stElementContainer"]:has(.fp-side
 .st-key-fp_nav_leads button { --fp-ic: __NAV_LEADS__; }
 .st-key-fp_nav_drafts button { --fp-ic: __NAV_DRAFT__; }
 .st-key-fp_nav_outbox button { --fp-ic: __NAV_OUTBOX__; }
+.st-key-fp_nav_import button { --fp-ic: __NAV_IMPORT__; }
 .st-key-fp_nav_settings button { --fp-ic: __NAV_SETTINGS__; }
 [class*="st-key-fp_nav_"] button:hover { background: rgba(255, 255, 255, .06); color: #FFFFFF; }
 [class*="st-key-fp_nav_"] button:focus-visible { outline: 2px solid __SKY__; outline-offset: 2px; }
@@ -1071,6 +1073,7 @@ _WORKSPACE_TOKENS = {
     "__NAV_LEADS__": NAV_LEADS,
     "__NAV_DRAFT__": NAV_DRAFT,
     "__NAV_OUTBOX__": NAV_OUTBOX,
+    "__NAV_IMPORT__": NAV_IMPORT,
     "__NAV_SETTINGS__": NAV_SETTINGS,
     "__METRIC_USERS__": METRIC_USERS,
     "__METRIC_VALID__": METRIC_VALID,

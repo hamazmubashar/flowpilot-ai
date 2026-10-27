@@ -81,6 +81,43 @@ of this deployment.
 5. Stop: `docker compose -f deploy/public-demo/compose.yaml down` (add `-v` to drop the demo
    data volume).
 
+### Behind another project's Caddy (shared server)
+
+When another app on the same server already owns ports 80/443 with Caddy (LeadFlow AI on the
+portfolio server), skip the bundled nginx and its certificates:
+
+1. Start LeadFlow first: its compose file creates the `shared-edge` network.
+2. In `deploy/public-demo/.env` set `FLOWPILOT_PUBLIC_HOST` to the public name and
+   `FLOWPILOT_TLS_DIR=./certs` (only to satisfy compose; nginx does not start).
+3. `docker compose -f compose.yaml -f compose.shared-caddy.yaml up -d --build`
+4. In LeadFlow: copy `deploy/sites/flowpilot.caddy.example` to `flowpilot.caddy`, add
+   `FLOWPILOT_DOMAIN=<the same name>` to `deploy/production.env`, then
+   `docker compose up -d caddy`.
+
+Trade-off: Caddy has no per-visitor rate limits, so the nginx `limit_req`/`limit_conn` rules do
+not apply in this mode. The demo data still resets on the refresh schedule.
+
+### Live n8n editor (M7, `compose.n8n.yaml`)
+
+Add `-f compose.n8n.yaml` to the shared-Caddy command above, and copy LeadFlow's
+`deploy/sites/n8n.caddy.example` to `n8n.caddy` with `FLOWPILOT_N8N_DOMAIN` set.
+
+1. **Open the editor link straight away and create the owner account.** Until an owner exists,
+   whoever opens the page first can claim it. Use a long unique password.
+2. Settings → Personal → enable **two-factor authentication**.
+3. Import `n8n/workflows/*.json` (Workflows → Import from file) and create the two Header Auth
+   credentials they name: **FlowPilot API** (header `X-API-Key`, value `FLOWPILOT_N8N_API_KEY`)
+   and **FlowPilot webhook** (header `X-Webhook-Token`, value `FLOWPILOT_N8N_WEBHOOK_TOKEN`),
+   both from `deploy/public-demo/.env`. In each imported workflow, pick these credentials on the
+   nodes that ask for them, then switch `flowpilot-lead-intake` and
+   `flowpilot-prepare-next-lead-scheduled` to **Active** (the manual workflow stays inactive).
+4. The console's **Import CSV** page sends each row to that workflow (one n8n execution per row);
+   re-importing the same file creates nothing new.
+
+n8n has no public webhook path (Caddy returns 404) and no internet egress: it can reach only the
+FlowPilot API. Its data lives in the `n8n-data` volume; losing `N8N_ENCRYPTION_KEY` makes the
+stored credentials unrecoverable.
+
 ## Scenario: restore from backup (corruption, bad data, accidental deletion)
 
 1. Stop the API (`Ctrl+C` on `flowpilot-api`). Later milestones: pause n8n workflows too.

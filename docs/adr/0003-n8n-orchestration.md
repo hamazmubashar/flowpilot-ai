@@ -171,3 +171,19 @@ manual-only.
 
 **Not yet verified at runtime:** import into n8n 2.44.4 and a live run (node versions:
 webhook 2, Respond to Webhook 1.1, IF 2.2, HTTP Request 4.5).
+
+## Addendum (2026-10-27): live n8n in the public demo (M7)
+
+**Decision.** For the public portfolio demo, n8n runs on the server (`deploy/public-demo/
+compose.n8n.yaml`) with the same pinned image, node allow-list and hardening as the local runtime.
+Its editor is served by the shared Caddy at its own HTTPS name behind n8n's owner login and 2FA;
+every webhook and form path returns 404 publicly, and n8n's networks have no internet egress.
+
+- **CSV import:** the console's Import CSV page sends each row to `flowpilot-lead-intake` inside
+  Docker (one execution per row, idempotency key per file and row).
+- **Scheduled preparation:** `flowpilot-prepare-next-lead-scheduled` is a copy of the manual
+  workflow that differs only in its trigger: one schedule, at most every 5 minutes, exported
+  inactive. `flowpilot-prepare-next-lead` itself stays manual-only. Drafts still wait for a human
+  reviewer; nothing is approved or sent.
+- **Why a copy, not a change:** the manual workflow's rule (a person starts every run) still holds
+  for local use and its tests; the demo's automation is a separate, separately reviewed policy.

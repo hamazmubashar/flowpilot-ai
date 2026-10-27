@@ -23,6 +23,7 @@ from tests.conftest import API_KEY
 
 ROOT = Path(__file__).resolve().parents[1]
 DEPLOY = ROOT / "deploy" / "public-demo"
+DEMO_LEADS = 3 + demo.DEMO_SYNTHETIC_COUNT  # three created scenarios plus the synthetic leads
 CONSOLE_KEY = "console-key-0123456789abcdefghijklmnop"
 N8N_KEY = "n8n-key-0123456789abcdefghijklmnopqrstu"
 TOKEN = "fpr_" + "PublicDemoReviewerToken_" * 2
@@ -237,9 +238,15 @@ def test_console_container_bind_needs_the_public_flag(
 def test_refresh_builds_reviewable_demo_data(paths: dict) -> None:
     before = paths["normal"].read_bytes()
     leads = demo.refresh(yes=True, reviewer_token=TOKEN, settings=base(paths["normal"]))
-    assert leads == 3
-    assert count(paths["demo"], "leads") == 3
-    assert count(paths["demo"], "drafts") == 3
+    assert leads == DEMO_LEADS
+    assert count(paths["demo"], "leads") == DEMO_LEADS
+    assert count(paths["demo"], "drafts") == 3 + demo.DEMO_SYNTHETIC_DRAFTS
+    conn = connect(paths["demo"])
+    try:
+        tiers = dict(conn.execute("SELECT tier, COUNT(*) FROM lead_scores GROUP BY tier"))
+    finally:
+        conn.close()
+    assert tiers == {"hot": 11, "warm": 28, "cold": 21}  # a realistic mix, not mostly hot
     assert count(paths["demo"], "approvals") == count(paths["demo"], "outbox") == 0
     conn = connect(paths["demo"])
     try:
@@ -257,10 +264,10 @@ def test_refresh_is_safe_while_the_api_serves(paths: dict, lead_payload: dict) -
     with TestClient(create_app(served)) as api:
         extra = {**lead_payload, "contact_email": "visitor@visitor.example"}
         assert api.post("/leads", json=extra, headers=auth).status_code == 201
-        assert api.get("/leads", headers=auth).json()["total"] == 4
+        assert api.get("/leads", headers=auth).json()["total"] == DEMO_LEADS + 1
         demo.refresh(yes=True, reviewer_token=TOKEN, settings=base(paths["normal"]))
         after = api.get("/leads", headers=auth)  # the running app sees the refreshed data
-        assert after.json()["total"] == 3
+        assert after.json()["total"] == DEMO_LEADS
         assert after.headers[DEMO_HEADER] == "demo"
 
 
@@ -522,6 +529,52 @@ def test_env_example_has_only_placeholders() -> None:
         if line and not line.startswith("#")
     ]  # fmt: skip
     values = dict(line.split("=", 1) for line in lines)
-    for key in ("FLOWPILOT_API_KEY", "FLOWPILOT_CONSOLE_API_KEY", "FLOWPILOT_DEMO_REVIEWER_TOKEN"):
+    secrets = (
+        "FLOWPILOT_API_KEY",
+        "FLOWPILOT_CONSOLE_API_KEY",
+        "FLOWPILOT_DEMO_REVIEWER_TOKEN",
+        "N8N_ENCRYPTION_KEY",
+        "FLOWPILOT_N8N_API_KEY",
+        "FLOWPILOT_N8N_WEBHOOK_TOKEN",
+    )
+    for key in secrets:
         assert "placeholder" in values[key], key
-    assert len({values[k] for k in values if "KEY" in k or "TOKEN" in k}) == 3
+    assert len({values[k] for k in values if "KEY" in k or "TOKEN" in k}) == len(secrets)
+
+
+def test_shared_caddy_addon_skips_nginx_and_exposes_only_the_console() -> None:
+    addon = json.loads((DEPLOY / "compose.shared-caddy.yaml").read_text(encoding="utf-8"))
+    services = addon["services"]
+    assert set(services) == {"proxy", "console"}
+    assert services["proxy"] == {"profiles": ["own-proxy"]}  # nginx not started by default
+    console_nets = services["console"]["networks"]
+    assert set(console_nets) == {"backend", "frontend", "shared-edge"}
+    assert console_nets["shared-edge"] == {"aliases": ["flowpilot-console"]}
+    assert addon["networks"] == {"shared-edge": {"external": True, "name": "shared-edge"}}
+    assert "ports" not in services["console"]  # still reached only through the proxy network
+    assert "shared-edge" not in json.dumps(compose()["services"]["api"])  # API never joins it
+
+
+def test_n8n_addon_is_private_hardened_and_matches_the_local_runtime() -> None:
+    addon = json.loads((DEPLOY / "compose.n8n.yaml").read_text(encoding="utf-8"))
+    local = json.loads((ROOT / "compose.yaml").read_text(encoding="utf-8"))["services"]["n8n"]
+    n8n = addon["services"]["n8n"]
+    assert "ports" not in n8n  # reached only through the shared Caddy
+    assert set(n8n["networks"]) == {"backend", "shared-edge"}  # both have no internet egress
+    assert n8n["image"] == local["image"]  # same pinned digest as the tested local runtime
+    env = n8n["environment"]
+    assert env["NODES_INCLUDE"] == local["environment"]["NODES_INCLUDE"]  # same node allow-list
+    assert env["N8N_PUBLIC_API_DISABLED"] == "true"
+    assert env["N8N_COMMUNITY_PACKAGES_ENABLED"] == "false"
+    assert env["N8N_SECURE_COOKIE"] == "true"
+    assert env["N8N_PROTOCOL"] == "https"
+    assert env["N8N_PROXY_HOPS"] == "1"
+    assert env["N8N_ENCRYPTION_KEY"].startswith("${N8N_ENCRYPTION_KEY:?")  # required, no default
+    assert n8n["cap_drop"] == ["ALL"]
+    assert "no-new-privileges:true" in n8n["security_opt"]
+    api = addon["services"]["api"]
+    assert api["networks"]["backend"] == {"aliases": ["host.docker.internal"]}
+    assert api["environment"]["FLOWPILOT_N8N_API_KEY"].startswith("${FLOWPILOT_N8N_API_KEY:?")
+    console = addon["services"]["console"]["environment"]
+    assert console["FLOWPILOT_N8N_URL"] == "http://n8n:5678"  # private network only
+    assert console["FLOWPILOT_N8N_WEBHOOK_TOKEN"].startswith("${FLOWPILOT_N8N_WEBHOOK_TOKEN:?")

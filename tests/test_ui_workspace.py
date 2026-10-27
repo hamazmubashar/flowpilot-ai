@@ -285,7 +285,7 @@ def test_sidebar_navigation_and_footer(fake: dict) -> None:
     at = leads()
     page = html(at)
     assert [b.key for b in at.button if b.key.startswith("fp_nav_")] == [
-        "fp_nav_dashboard", "fp_nav_leads", "fp_nav_drafts", "fp_nav_outbox",
+        "fp_nav_dashboard", "fp_nav_leads", "fp_nav_import", "fp_nav_drafts", "fp_nav_outbox",
         "fp_nav_settings",
     ]  # fmt: skip
     assert 'title="Not available yet"' not in page  # no placeholder entries remain

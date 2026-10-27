@@ -1,0 +1,93 @@
+{
+  "x-note": "M7 B: n8n for the public demo, behind the shared Caddy (use together with compose.shared-caddy.yaml). Same pinned image, node allow-list and hardening as the local runtime in compose.yaml. n8n joins only internal networks: backend (to reach the API, aliased host.docker.internal so the exported workflows work unchanged) and shared-edge (so Caddy can serve the editor). Neither network has internet egress. Caddy blocks every public webhook path; the console calls webhooks inside Docker. The console imports CSV files by calling n8n's intake webhook at http://n8n:5678 on the backend network.",
+  "services": {
+    "api": {
+      "environment": {
+        "FLOWPILOT_N8N_API_KEY": "${FLOWPILOT_N8N_API_KEY:?Set FLOWPILOT_N8N_API_KEY in deploy/public-demo/.env (see env.example)}"
+      },
+      "networks": {
+        "backend": {
+          "aliases": [
+            "host.docker.internal"
+          ]
+        }
+      }
+    },
+    "n8n": {
+      "image": "n8nio/n8n@sha256:c72fa9f1bd9b59626deeb284824c0495625c3f6d894d395d27e241bf192d9900",
+      "restart": "unless-stopped",
+      "environment": {
+        "N8N_ENCRYPTION_KEY": "${N8N_ENCRYPTION_KEY:?Set N8N_ENCRYPTION_KEY in deploy/public-demo/.env (see env.example)}",
+        "N8N_HOST": "${FLOWPILOT_N8N_HOST:?Set FLOWPILOT_N8N_HOST in deploy/public-demo/.env (see env.example)}",
+        "N8N_PORT": "5678",
+        "N8N_PROTOCOL": "https",
+        "N8N_EDITOR_BASE_URL": "https://${FLOWPILOT_N8N_HOST:?Set FLOWPILOT_N8N_HOST in deploy/public-demo/.env (see env.example)}",
+        "WEBHOOK_URL": "https://${FLOWPILOT_N8N_HOST:?Set FLOWPILOT_N8N_HOST in deploy/public-demo/.env (see env.example)}/",
+        "N8N_SECURE_COOKIE": "true",
+        "GENERIC_TIMEZONE": "UTC",
+        "N8N_DIAGNOSTICS_ENABLED": "false",
+        "N8N_VERSION_NOTIFICATIONS_ENABLED": "false",
+        "N8N_TEMPLATES_ENABLED": "false",
+        "N8N_PERSONALIZATION_ENABLED": "false",
+        "N8N_HIRING_BANNER_ENABLED": "false",
+        "N8N_PUBLIC_API_DISABLED": "true",
+        "N8N_PUBLIC_API_SWAGGERUI_DISABLED": "true",
+        "N8N_DISABLED_MODULES": "mcp-registry",
+        "N8N_COMMUNITY_PACKAGES_ENABLED": "false",
+        "N8N_AI_ENABLED": "false",
+        "N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS": "true",
+        "EXECUTIONS_DATA_PRUNE": "true",
+        "EXECUTIONS_DATA_MAX_AGE": "168",
+        "N8N_CONCURRENCY_PRODUCTION_LIMIT": "1",
+        "NODES_INCLUDE": "[\"n8n-nodes-base.webhook\",\"n8n-nodes-base.httpRequest\",\"n8n-nodes-base.if\",\"n8n-nodes-base.respondToWebhook\",\"n8n-nodes-base.scheduleTrigger\",\"n8n-nodes-base.errorTrigger\",\"n8n-nodes-base.noOp\",\"n8n-nodes-base.set\",\"n8n-nodes-base.manualTrigger\"]",
+        "N8N_PROXY_HOPS": "1",
+        "N8N_LISTEN_ADDRESS": "0.0.0.0"
+      },
+      "volumes": [
+        "n8n-data:/home/node/.n8n"
+      ],
+      "networks": {
+        "backend": {},
+        "shared-edge": {
+          "aliases": [
+            "flowpilot-n8n"
+          ]
+        }
+      },
+      "depends_on": {
+        "api": {
+          "condition": "service_healthy"
+        }
+      },
+      "cap_drop": [
+        "ALL"
+      ],
+      "security_opt": [
+        "no-new-privileges:true"
+      ],
+      "mem_limit": "1g",
+      "pids_limit": 256,
+      "healthcheck": {
+        "test": [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:5678/healthz').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"
+        ],
+        "interval": "10s",
+        "timeout": "5s",
+        "retries": 12,
+        "start_period": "20s"
+      }
+    },
+    "console": {
+      "environment": {
+        "FLOWPILOT_N8N_URL": "http://n8n:5678",
+        "FLOWPILOT_N8N_WEBHOOK_TOKEN": "${FLOWPILOT_N8N_WEBHOOK_TOKEN:?Set FLOWPILOT_N8N_WEBHOOK_TOKEN in deploy/public-demo/.env (see env.example)}"
+      }
+    }
+  },
+  "volumes": {
+    "n8n-data": {}
+  }
+}

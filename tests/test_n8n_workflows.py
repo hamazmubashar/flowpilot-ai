@@ -525,8 +525,34 @@ def intake_violations(workflow: dict) -> list[str]:
     return found
 
 
+SCHEDULE_TRIGGER = "n8n-nodes-base.scheduleTrigger"
+MIN_SCHEDULE_MINUTES = 5
+
+
+def schedule_trigger_violations(workflow: dict) -> list[str]:
+    """The scheduled copy (M7 D, public demo) starts only on one schedule, no more often than
+    every MIN_SCHEDULE_MINUTES minutes; never on a request, an error or by hand."""
+    triggers = [n for n in workflow.get("nodes") or [] if _is_trigger(str(n.get("type", "")))]
+    found = [
+        f"{n.get('name', '?')}: trigger {n.get('type')!r} is not scheduleTrigger"
+        for n in triggers
+        if n.get("type") != SCHEDULE_TRIGGER
+    ]
+    schedules = [n for n in triggers if n.get("type") == SCHEDULE_TRIGGER]
+    if len(schedules) != 1:
+        found.append("workflow must have exactly one scheduleTrigger node")
+    for node in schedules:
+        rules = ((node.get("parameters") or {}).get("rule") or {}).get("interval") or []
+        if len(rules) != 1 or rules[0].get("field") != "minutes":
+            found.append(f"{node.get('name', '?')}: schedule must be one minutes interval")
+        elif int(rules[0].get("minutesInterval", 0)) < MIN_SCHEDULE_MINUTES:
+            found.append(f"{node.get('name', '?')}: runs more often than every 5 minutes")
+    return found
+
+
 POLICIES = {
     "flowpilot-prepare-next-lead.json": (ALLOWED_CALLS, manual_trigger_violations),
+    "flowpilot-prepare-next-lead-scheduled.json": (ALLOWED_CALLS, schedule_trigger_violations),
     "flowpilot-lead-intake.json": (INTAKE_CALLS, intake_violations),
 }
 
@@ -692,3 +718,53 @@ def test_retries_are_rejected_for_every_workflow() -> None:
     workflow = valid_workflow()
     _node(workflow, "Draft")["retryOnFail"] = True
     assert any("automatic retries" in v for v in workflow_violations(workflow))
+
+
+# --- flowpilot-prepare-next-lead-scheduled (M7 D) ---------------------------------------------
+
+SCHEDULED = ROOT / "n8n" / "workflows" / "flowpilot-prepare-next-lead-scheduled.json"
+
+
+def test_scheduled_copy_differs_from_the_manual_workflow_only_in_its_trigger() -> None:
+    manual = json.loads(PREPARE_NEXT_LEAD.read_text(encoding="utf-8"))
+    scheduled = json.loads(SCHEDULED.read_text(encoding="utf-8"))
+    assert scheduled["active"] is False  # switched on deliberately in the editor
+
+    def body(workflow: dict) -> list:
+        return [
+            (n["name"], n["type"], n["parameters"])
+            for n in workflow["nodes"]
+            if not _is_trigger(n["type"])
+        ]
+
+    assert body(scheduled) == body(manual)
+    assert schedule_trigger_violations(scheduled) == []
+
+
+def _scheduled_with(**rule) -> dict:
+    workflow = json.loads(SCHEDULED.read_text(encoding="utf-8"))
+    trigger = next(n for n in workflow["nodes"] if n["type"] == SCHEDULE_TRIGGER)
+    trigger["parameters"] = {"rule": {"interval": [rule]}}
+    return workflow
+
+
+def test_a_faster_schedule_is_rejected() -> None:
+    workflow = _scheduled_with(field="minutes", minutesInterval=1)
+    assert any("more often" in v for v in schedule_trigger_violations(workflow))
+
+
+def test_a_non_minute_schedule_is_rejected() -> None:
+    workflow = _scheduled_with(field="seconds", secondsInterval=30)
+    assert any("one minutes interval" in v for v in schedule_trigger_violations(workflow))
+
+
+def test_an_extra_trigger_is_rejected() -> None:
+    workflow = json.loads(SCHEDULED.read_text(encoding="utf-8"))
+    workflow["nodes"].append({"name": "Hook", "type": "n8n-nodes-base.webhook", "parameters": {}})
+    violations = schedule_trigger_violations(workflow)
+    assert "Hook: trigger 'n8n-nodes-base.webhook' is not scheduleTrigger" in violations
+
+
+def test_the_manual_rule_still_rejects_the_scheduled_copy() -> None:
+    workflow = json.loads(SCHEDULED.read_text(encoding="utf-8"))
+    assert manual_trigger_violations(workflow) != []  # the two policies cannot be swapped

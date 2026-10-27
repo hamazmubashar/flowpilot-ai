@@ -1,0 +1,23 @@
+{
+  "x-note": "Add-on for a server where another project's Caddy already owns ports 80/443 (LeadFlow AI). Use: docker compose -f compose.yaml -f compose.shared-caddy.yaml up -d. The bundled nginx proxy is not started (profile own-proxy); the console joins the external shared-edge network as flowpilot-console, and that Caddy terminates TLS for FLOWPILOT_PUBLIC_HOST. Plain Caddy has no per-visitor rate limits, unlike the bundled nginx.",
+  "services": {
+    "proxy": {
+      "profiles": ["own-proxy"]
+    },
+    "console": {
+      "networks": {
+        "backend": {},
+        "frontend": {},
+        "shared-edge": {
+          "aliases": ["flowpilot-console"]
+        }
+      }
+    }
+  },
+  "networks": {
+    "shared-edge": {
+      "external": true,
+      "name": "shared-edge"
+    }
+  }
+}
