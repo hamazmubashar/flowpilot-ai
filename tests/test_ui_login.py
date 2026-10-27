@@ -233,3 +233,18 @@ def test_public_demo_without_a_token_falls_back_to_sign_in(
     assert not at.exception
     assert len(at.button) == 1
     assert "Explore the demo" not in rendered(at)
+
+
+def test_guest_button_styles_outrank_the_panel_button_rule() -> None:
+    """Regression: `.st-key-fp_signin [data-testid="stButton"] button` (white background) beat a
+    plain `.st-key-fp_guest button` rule, leaving white text on white: an empty-looking box."""
+    from flowpilot.ui.theme import stylesheet
+
+    css = stylesheet()
+    guest = '.st-key-fp_signin .st-key-fp_guest [data-testid="stButton"] button'
+    panel = '.st-key-fp_signin [data-testid="stButton"] button {'
+    # One more class than the panel rule, so the guest style wins wherever it appears.
+    assert f"{guest} {{" in css
+    assert f"{guest} span {{" in css
+    assert panel in css
+    assert "\n.st-key-fp_guest button" not in css

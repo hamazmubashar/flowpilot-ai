@@ -343,19 +343,25 @@ header[data-testid="stHeader"] { background: transparent; }
 .st-key-fp_signin [data-testid="stFormSubmitButton"] button:disabled {
   filter: saturate(.55) brightness(1.12); box-shadow: none; cursor: progress; transform: none;
 }
-/* Public demo (ADR 0006): one-click guest access is the main action; token sign-in is secondary. */
-.st-key-fp_guest button {
+/* Public demo (ADR 0006): one-click guest access is the main action; token sign-in is secondary.
+   Scoped under .st-key-fp_signin so these rules outrank the panel's generic white stButton rule. */
+.st-key-fp_signin .st-key-fp_guest [data-testid="stButton"] button {
   width: 100%; height: 60px; border-radius: 12px; border: 1px solid var(--fp-signal-deep);
   background: linear-gradient(180deg, #2546CC, var(--fp-signal-deep));
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, .18), 0 14px 30px -14px rgba(31, 63, 191, .75);
   transition: filter .15s ease, box-shadow .15s ease, transform .06s ease;
 }
-.st-key-fp_guest button p, .st-key-fp_guest button span {
+.st-key-fp_signin .st-key-fp_guest [data-testid="stButton"] button p,
+.st-key-fp_signin .st-key-fp_guest [data-testid="stButton"] button span {
   font-size: 1.12rem; font-weight: 600; color: #FFFFFF;
 }
-.st-key-fp_guest button:hover { filter: brightness(1.08); }
-.st-key-fp_guest button:active { transform: translateY(1px); }
-.st-key-fp_guest button:focus-visible {
+.st-key-fp_signin .st-key-fp_guest [data-testid="stButton"] button:hover {
+  filter: brightness(1.08);
+}
+.st-key-fp_signin .st-key-fp_guest [data-testid="stButton"] button:active {
+  transform: translateY(1px);
+}
+.st-key-fp_signin .st-key-fp_guest [data-testid="stButton"] button:focus-visible {
   outline: none; box-shadow: 0 0 0 4px rgba(31, 63, 191, .3);
 }
 .st-key-fp_token_secondary { margin-top: 8px; }
